@@ -27,6 +27,16 @@
   - 🏪 Módulo de mercado: precios actuales vía IA
   - ⚡ Alertas inteligentes proactivas por IA
 */
+/* ── SheetJS loader for Excel import ── */
+const loadXLSX = (cb) => {
+  if (window.XLSX) { cb(window.XLSX); return; }
+  const s = document.createElement("script");
+  s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+  s.onload = () => { if (window.XLSX) cb(window.XLSX); };
+  s.onerror = () => console.warn("SheetJS CDN failed");
+  document.head.appendChild(s);
+};
+
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -367,127 +377,162 @@ const defaultState = () => ({
 
 /* ═══════════════════════════════════════════
    MÓDULO: MAPA SATELITAL (Dashboard)
-   Estilo Google Maps — UI limpio y funcional
 ═══════════════════════════════════════════ */
 const MapDashboard = ({ state, setState, setTab }) => {
-  const mapRef      = useRef(null);
+  const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const polygonsRef = useRef([]);
-  const markersRef  = useRef([]);
-  const drawPtsRef  = useRef([]);
-  const drawLayRef  = useRef(null);
-  const tempMkRef   = useRef([]);
+  const drawPointsRef = useRef([]);
+  const drawLayerRef = useRef(null);
+  const markersRef = useRef([]);
+  const [mapReady, setMapReady] = useState(false);
+  const [drawing, setDrawing] = useState(false);
+  const [selectedPlot, setSelectedPlot] = useState(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [pendingPolygon, setPendingPolygon] = useState(null);
+  const [plotForm, setPlotForm] = useState({ name:"", crop:"tomate", area:"", notes:"", color:"#4ade80" });
+  const [gpsLoading, setGpsLoading] = useState(false);
 
-  const [mapReady,    setMapReady]    = useState(false);
-  const [mapError,    setMapError]    = useState(false);
-  const [drawing,     setDrawing]     = useState(false);
-  const [ptCount,     setPtCount]     = useState(0);
-  const [selectedPlot,setSelectedPlot]= useState(null);
-  const [showForm,    setShowForm]    = useState(false);
-  const [gpsLoading,  setGpsLoading]  = useState(false);
-  const [mapType,     setMapType]     = useState("satellite"); // satellite | street
-  const [plotForm,    setPlotForm]    = useState({ name:"", crop:"tomate", area:"", notes:"", color:"#4ade80" });
+  const PLOT_COLORS = ["#4ade80","#60a5fa","#fbbf24","#f87171","#a78bfa","#f97316","#06b6d4","#ec4899"];
 
-  const COLORS = ["#4ade80","#60a5fa","#fbbf24","#f87171","#a78bfa","#f97316","#06b6d4","#ec4899"];
-
-  /* ── Cargar Leaflet y montar mapa ── */
   useEffect(() => {
-    let cancelled = false;
     loadLeaflet((Lf) => {
-      if (cancelled || mapInstance.current || !mapRef.current) return;
+      if (mapInstance.current) return;
       const center = state.farm.lat ? [state.farm.lat, state.farm.lng] : [19.4517, -70.6970];
       const map = Lf.map(mapRef.current, {
-        center, zoom: 16,
-        zoomControl: false,
-        attributionControl: false,
+        center, zoom: 15, zoomControl: true,
+        attributionControl: true,
       });
 
-      // Capa satelital Google Maps compatible
-      const satellite = Lf.tileLayer(
+      // Satélite ESRI
+      Lf.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        { maxZoom:20, tileSize:256 }
-      );
-      const street = Lf.tileLayer(
-        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-        { maxZoom:19, tileSize:256 }
-      );
-      const labels = Lf.tileLayer(
+        { attribution:"Esri", maxZoom:19 }
+      ).addTo(map);
+
+      // Labels overlay
+      Lf.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        { maxZoom:20, opacity:0.7 }
-      );
-
-      satellite.addTo(map);
-      labels.addTo(map);
-
-      map._layers_satellite = satellite;
-      map._layers_street    = street;
-      map._layers_labels    = labels;
-
-      // Zoom controls custom
-      Lf.control.zoom({ position:"bottomright" }).addTo(map);
+        { opacity:0.5, maxZoom:19 }
+      ).addTo(map);
 
       mapInstance.current = map;
-      if (!cancelled) setMapReady(true);
+      setMapReady(true);
       renderPlots(map, Lf, state.plots);
     });
-    return () => {
-      cancelled = true;
-      if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; }
-    };
+    return () => { if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; } };
   }, []);
 
-  /* ── Actualizar capas al cambiar tipo ── */
-  useEffect(() => {
-    const map = mapInstance.current;
-    if (!map || !window.L) return;
-    const sat = map._layers_satellite;
-    const str = map._layers_street;
-    const lbl = map._layers_labels;
-    if (mapType === "satellite") {
-      if (!map.hasLayer(sat)) map.addLayer(sat);
-      if (map.hasLayer(str))  map.removeLayer(str);
-      if (!map.hasLayer(lbl)) map.addLayer(lbl);
-    } else {
-      if (map.hasLayer(sat))  map.removeLayer(sat);
-      if (!map.hasLayer(str)) map.addLayer(str);
-      if (map.hasLayer(lbl))  map.removeLayer(lbl);
-    }
-  }, [mapType]);
-
-  /* ── Re-render parcelas ── */
+  // Re-render plots when state changes
   useEffect(() => {
     if (!mapInstance.current || !mapReady) return;
     renderPlots(mapInstance.current, window.L, state.plots);
   }, [state.plots, mapReady]);
 
   const renderPlots = (map, Lf, plots) => {
+    // Limpiar capas anteriores
     polygonsRef.current.forEach(l => { try { map.removeLayer(l); } catch{} });
     markersRef.current.forEach(l => { try { map.removeLayer(l); } catch{} });
-    polygonsRef.current = []; markersRef.current = [];
+    polygonsRef.current = [];
+    markersRef.current = [];
+
     plots.forEach(plot => {
       if (!plot.polygon || plot.polygon.length < 3) return;
-      const color = plot.color || "#4ade80";
+      const color = plot.color || T.green;
       const poly = Lf.polygon(plot.polygon, {
-        color, fillColor:color, fillOpacity:0.22, weight:3,
+        color, fillColor:color, fillOpacity:0.25, weight:2.5, dashArray:"4 3",
       }).addTo(map);
+
       const center = poly.getBounds().getCenter();
-      const icon = Lf.divIcon({
-        className:"",
-        html:`<div style="background:rgba(5,14,9,0.85);border:1px solid ${color};border-radius:8px;padding:3px 8px;font-size:11px;font-weight:700;color:${color};white-space:nowrap;backdrop-filter:blur(8px)">${CROPS[plot.crop]?.icon||"🌱"} ${plot.name}</div>`,
-        iconSize:[0,0], iconAnchor:[-4,14]
-      });
-      const mk = Lf.marker(center, { icon, interactive:false }).addTo(map);
-      poly.on("click", () => { setSelectedPlot(plot.id); setShowForm(false); });
+      const label = Lf.divIcon({ className:"", html:`<div class="plot-label">${CROPS[plot.crop]?.icon||"🌱"} ${plot.name}</div>`, iconSize:[0,0], iconAnchor:[-4,-4] });
+      const marker = Lf.marker(center, { icon:label, interactive:false }).addTo(map);
+
+      poly.on("click", () => { setSelectedPlot(plot.id); setShowAddForm(false); });
       polygonsRef.current.push(poly);
-      markersRef.current.push(mk);
+      markersRef.current.push(marker);
     });
   };
 
-  /* ── GPS ── */
-  const goToFarm = () => {
+  const startDrawing = () => {
+    if (!mapInstance.current) return;
+    setDrawing(true);
+    drawPointsRef.current = [];
+    setPendingPolygon(null);
+    setSelectedPlot(null);
+    toast("Toca el mapa para marcar los vértices del terreno. Mínimo 3 puntos.","info");
+
+    mapInstance.current.on("click", handleMapClick);
+  };
+
+  const handleMapClick = useCallback((e) => {
+    if (!drawing && drawPointsRef.current.length === 0) return;
+    const pt = [e.latlng.lat, e.latlng.lng];
+    drawPointsRef.current.push(pt);
+
+    // Preview
+    if (drawLayerRef.current) { try { mapInstance.current.removeLayer(drawLayerRef.current); } catch{} }
+    if (drawPointsRef.current.length >= 2) {
+      drawLayerRef.current = window.L.polygon(drawPointsRef.current, {
+        color:T.green, fillColor:T.green, fillOpacity:0.15, weight:2, dashArray:"5 4"
+      }).addTo(mapInstance.current);
+    }
+
+    if (drawPointsRef.current.length >= 3) {
+      setPendingPolygon([...drawPointsRef.current]);
+    }
+  }, [drawing]);
+
+  const finishDrawing = () => {
+    if (!mapInstance.current) return;
+    mapInstance.current.off("click", handleMapClick);
+    setDrawing(false);
+    if (drawPointsRef.current.length >= 3) {
+      setPendingPolygon([...drawPointsRef.current]);
+      setShowAddForm(true);
+      setPlotForm({ name:"", crop:ZONES[state.farm.zone]?.crops?.[0]||"tomate", area:"", notes:"", color:PLOT_COLORS[state.plots.length % PLOT_COLORS.length] });
+    } else {
+      toast("Necesitas al menos 3 puntos","error");
+      if (drawLayerRef.current) { try { mapInstance.current.removeLayer(drawLayerRef.current); } catch{} }
+    }
+  };
+
+  const cancelDrawing = () => {
+    if (mapInstance.current) mapInstance.current.off("click", handleMapClick);
+    setDrawing(false);
+    if (drawLayerRef.current) { try { mapInstance.current.removeLayer(drawLayerRef.current); } catch{} }
+    drawPointsRef.current = [];
+    setPendingPolygon(null);
+    setShowAddForm(false);
+  };
+
+  const savePlot = () => {
+    if (!plotForm.name || !pendingPolygon) { toast("Agrega el nombre del terreno","error"); return; }
+    const newPlot = {
+      id: uid(), name:plotForm.name, crop:plotForm.crop, area:Number(plotForm.area)||0,
+      stage:0, notes:plotForm.notes, color:plotForm.color,
+      lat:pendingPolygon[0][0], lng:pendingPolygon[0][1],
+      polygon:pendingPolygon,
+      invoices:[], transactions:[],
+      createdAt: nowDate(),
+    };
+    setState(s => ({ ...s, plots:[...s.plots, newPlot] }));
+    if (drawLayerRef.current) { try { mapInstance.current.removeLayer(drawLayerRef.current); } catch{} }
+    drawPointsRef.current = [];
+    setPendingPolygon(null);
+    setShowAddForm(false);
+    toast(`Terreno "${plotForm.name}" registrado ✓`);
+  };
+
+  const deletePlot = (id) => {
+    setState(s => ({ ...s, plots:s.plots.filter(p=>p.id!==id) }));
+    setSelectedPlot(null);
+    toast("Terreno eliminado");
+  };
+
+  const centerOnFarm = () => {
     if (!mapInstance.current) return;
     if (state.farm.lat) {
-      mapInstance.current.setView([state.farm.lat, state.farm.lng], 17);
+      mapInstance.current.setView([state.farm.lat, state.farm.lng], 16);
     } else {
       setGpsLoading(true);
       navigator.geolocation?.getCurrentPosition(pos => {
@@ -496,257 +541,145 @@ const MapDashboard = ({ state, setState, setTab }) => {
         mapInstance.current.setView([lat, lng], 17);
         setGpsLoading(false);
         toast("Ubicación obtenida ✓");
-      }, () => { setGpsLoading(false); toast("No se pudo obtener GPS","error"); }, { enableHighAccuracy:true, timeout:10000 });
+      }, () => { setGpsLoading(false); toast("No se pudo obtener GPS","error"); }, { enableHighAccuracy:true });
     }
-  };
-
-  /* ── Dibujar terreno ── */
-  const handleMapClick = useCallback((e) => {
-    const pt = [e.latlng.lat, e.latlng.lng];
-    drawPtsRef.current.push(pt);
-    setPtCount(drawPtsRef.current.length);
-
-    // Marker puntito verde
-    const dotIcon = window.L.divIcon({
-      className:"",
-      html:`<div style="width:10px;height:10px;border-radius:50%;background:#4ade80;border:2px solid #fff;box-shadow:0 0 4px rgba(74,222,128,0.8)"></div>`,
-      iconSize:[10,10], iconAnchor:[5,5]
-    });
-    const mk = window.L.marker(pt, { icon:dotIcon }).addTo(mapInstance.current);
-    tempMkRef.current.push(mk);
-
-    // Preview polígono
-    if (drawLayRef.current) { try { mapInstance.current.removeLayer(drawLayRef.current); } catch{} }
-    if (drawPtsRef.current.length >= 2) {
-      drawLayRef.current = window.L.polygon(drawPtsRef.current, {
-        color:"#4ade80", fillColor:"#4ade80", fillOpacity:0.15, weight:2.5, dashArray:"6 4"
-      }).addTo(mapInstance.current);
-    }
-  }, []);
-
-  const startDrawing = () => {
-    if (!mapInstance.current) { toast("El mapa está cargando, espera un momento","error"); return; }
-    setDrawing(true); setSelectedPlot(null); setShowForm(false);
-    drawPtsRef.current = []; setPtCount(0);
-    mapInstance.current.on("click", handleMapClick);
-    mapInstance.current.getContainer().style.cursor = "crosshair";
-    toast("📍 Toca el mapa para marcar los límites de tu terreno","info");
-  };
-
-  const finishDrawing = () => {
-    mapInstance.current.off("click", handleMapClick);
-    mapInstance.current.getContainer().style.cursor = "";
-    setDrawing(false);
-    if (drawPtsRef.current.length >= 3) {
-      setShowForm(true);
-      setPlotForm({ name:"", crop:ZONES[state.farm.zone]?.crops?.[0]||"tomate", area:"", notes:"", color:COLORS[state.plots.length % COLORS.length] });
-    } else {
-      toast("Necesitas al menos 3 puntos para marcar un terreno","error");
-      clearDraw();
-    }
-  };
-
-  const clearDraw = () => {
-    tempMkRef.current.forEach(m => { try { mapInstance.current.removeLayer(m); } catch{} });
-    tempMkRef.current = [];
-    if (drawLayRef.current) { try { mapInstance.current.removeLayer(drawLayRef.current); } catch{} drawLayRef.current = null; }
-    drawPtsRef.current = []; setPtCount(0);
-  };
-
-  const cancelDrawing = () => {
-    if (mapInstance.current) { mapInstance.current.off("click", handleMapClick); mapInstance.current.getContainer().style.cursor = ""; }
-    setDrawing(false); setShowForm(false); clearDraw();
-  };
-
-  const savePlot = () => {
-    if (!plotForm.name.trim()) { toast("Escribe el nombre del terreno","error"); return; }
-    const poly = drawPtsRef.current;
-    const newPlot = {
-      id:uid(), name:plotForm.name.trim(), crop:plotForm.crop,
-      area:safeAmount(plotForm.area), stage:0, notes:plotForm.notes,
-      color:plotForm.color, lat:poly[0][0], lng:poly[0][1], polygon:poly,
-      invoices:[], transactions:[], photos:[], createdAt:nowDate(),
-    };
-    setState(s => ({ ...s, plots:[...s.plots, newPlot] }));
-    clearDraw(); setShowForm(false);
-    toast(`Terreno "${newPlot.name}" registrado ✓`);
   };
 
   const selPlot = selectedPlot ? state.plots.find(p=>p.id===selectedPlot) : null;
   const selCrop = selPlot ? CROPS[selPlot.crop] : null;
-
-  const MapBtn = ({ onClick, children, style={}, active=false }) => (
-    <button onClick={onClick} className="bp" style={{
-      background: active ? "#4ade80" : "rgba(5,14,9,0.92)",
-      border: `1px solid ${active ? "#4ade80" : "rgba(74,222,128,0.25)"}`,
-      borderRadius:"10px", padding:"10px 13px",
-      color: active ? "#050e09" : "#edfff4",
-      fontSize:"12px", fontWeight:700, cursor:"pointer",
-      backdropFilter:"blur(12px)", display:"flex", alignItems:"center", gap:"6px",
-      boxShadow:"0 2px 8px rgba(0,0,0,0.4)",
-      ...style
-    }}>{children}</button>
-  );
+  const income  = state.transactions.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const expense = state.transactions.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0) +
+                  state.plots.reduce((s,p)=>(p.transactions||[]).filter(t=>t.type==="expense").reduce((ss,t)=>ss+t.amount,0)+s,0);
 
   return (
-    <div style={{ position:"relative", width:"100%", height:"100%", overflow:"hidden" }}>
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", position:"relative" }}>
+      {/* Mapa */}
+      <div ref={mapRef} style={{ flex:1, width:"100%", minHeight:"0" }} />
 
-      {/* ── MAPA ── */}
-      <div ref={mapRef} style={{ position:"absolute", inset:0, width:"100%", height:"100%" }} />
-
-      {/* Loading overlay */}
-      {!mapReady && (
-        <div style={{ position:"absolute", inset:0, background:"#050e09", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:"12px", zIndex:500 }}>
-          <div style={{ fontSize:"36px" }}>🗺️</div>
-          <Spinner size={20} />
-          <div style={{ fontSize:"13px", color:"#4ade80", fontWeight:600 }}>Cargando mapa satelital...</div>
-          <div style={{ fontSize:"11px", color:"rgba(237,255,244,0.4)" }}>Activa tu GPS para ver tu ubicación</div>
-        </div>
-      )}
-
-      {/* ── BARRA SUPERIOR estilo Google Maps ── */}
-      <div style={{ position:"absolute", top:0, left:0, right:0, zIndex:800, padding:"10px 10px 0" }}>
-        {/* Info finca — barra compacta */}
-        <div style={{ background:"rgba(5,14,9,0.92)", border:"1px solid rgba(74,222,128,0.2)", borderRadius:"14px", padding:"10px 14px", backdropFilter:"blur(16px)", boxShadow:"0 2px 12px rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
-            <div style={{ width:"32px", height:"32px", borderRadius:"8px", background:"rgba(74,222,128,0.15)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"16px" }}>🌱</div>
-            <div>
-              <div style={{ fontSize:"13px", fontWeight:800, color:"#edfff4", lineHeight:1.2 }}>{state.farm.name||"Mi Finca"}</div>
-              <div style={{ fontSize:"10px", color:"rgba(237,255,244,0.5)" }}>{ZONES[state.farm.zone]?.icon} {ZONES[state.farm.zone]?.name} · {state.plots.length} terrenos</div>
-            </div>
-          </div>
-          {/* Cambiar tipo mapa */}
-          <div style={{ display:"flex", background:"rgba(255,255,255,0.06)", borderRadius:"8px", overflow:"hidden", border:"1px solid rgba(74,222,128,0.15)" }}>
-            {[["🛰","satellite"],["🗺","street"]].map(([icon,type])=>(
-              <button key={type} onClick={()=>setMapType(type)} style={{ background:mapType===type?"rgba(74,222,128,0.25)":"transparent", border:"none", padding:"5px 10px", color:mapType===type?"#4ade80":"rgba(237,255,244,0.5)", fontSize:"14px", cursor:"pointer", transition:"all 0.2s" }}>{icon}</button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* ── BOTONES FLOTANTES DERECHA ── */}
-      <div style={{ position:"absolute", top:"80px", right:"10px", zIndex:800, display:"flex", flexDirection:"column", gap:"8px" }}>
+      {/* Controles flotantes sobre el mapa */}
+      <div style={{ position:"absolute", top:"12px", right:"12px", zIndex:800, display:"flex", flexDirection:"column", gap:"8px" }}>
         {/* GPS */}
-        <MapBtn onClick={goToFarm}>
-          {gpsLoading ? <Spinner size={13}/> : "📍"}
-          {state.farm.lat ? "Mi finca" : "GPS"}
-        </MapBtn>
+        <button onClick={centerOnFarm} className="bp"
+          style={{ background:"rgba(5,14,9,0.92)", border:`1px solid ${T.border}`, borderRadius:"10px", padding:"9px 12px", color:T.green, fontSize:"13px", display:"flex", alignItems:"center", gap:"6px", backdropFilter:"blur(12px)", cursor:"pointer" }}>
+          {gpsLoading ? <Spinner size={14}/> : "📍"} {state.farm.lat ? "Mi finca" : "Ubicarme"}
+        </button>
 
-        {/* Marcar / Dibujar */}
+        {/* Dibujar */}
         {!drawing ? (
-          <MapBtn onClick={startDrawing} style={{ background:"linear-gradient(135deg,#16a34a,#14532d)", border:"none", color:"#fff" }}>
+          <button onClick={startDrawing} className="bp"
+            style={{ background:T.gradGreen, border:"none", borderRadius:"10px", padding:"9px 12px", color:"#fff", fontSize:"12px", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:"5px" }}>
             ✏️ Marcar terreno
-          </MapBtn>
+          </button>
         ) : (
-          <>
-            <MapBtn onClick={finishDrawing} active={ptCount >= 3} style={ptCount>=3?{ background:"#4ade80", color:"#050e09" }:{}}>
-              ✓ Guardar ({ptCount} pts)
-            </MapBtn>
-            <MapBtn onClick={cancelDrawing} style={{ color:"#f87171", borderColor:"rgba(248,113,113,0.3)" }}>
+          <div style={{ display:"flex", flexDirection:"column", gap:"6px" }}>
+            <button onClick={finishDrawing} className="bp"
+              style={{ background:"rgba(74,222,128,0.9)", border:"none", borderRadius:"10px", padding:"9px 12px", color:T.bg, fontSize:"12px", fontWeight:700, cursor:"pointer" }}>
+              ✓ Finalizar ({drawPointsRef.current?.length||0} pts)
+            </button>
+            <button onClick={cancelDrawing} className="bp"
+              style={{ background:T.redSoft, border:`1px solid ${T.red}30`, borderRadius:"10px", padding:"7px 12px", color:T.red, fontSize:"12px", fontWeight:600, cursor:"pointer" }}>
               ✕ Cancelar
-            </MapBtn>
-          </>
+            </button>
+          </div>
         )}
       </div>
 
-      {/* ── INSTRUCCIONES DIBUJO ── */}
-      {drawing && (
-        <div style={{ position:"absolute", bottom:"90px", left:"10px", right:"10px", zIndex:800, background:"rgba(5,14,9,0.95)", border:"1px solid rgba(74,222,128,0.3)", borderRadius:"12px", padding:"12px 14px", backdropFilter:"blur(12px)", textAlign:"center" }}>
-          <div style={{ fontSize:"12px", color:"#4ade80", fontWeight:700, marginBottom:"4px" }}>
-            {ptCount === 0 ? "👆 Toca el mapa para colocar el primer punto" :
-             ptCount === 1 ? "👆 Coloca el segundo punto" :
-             ptCount === 2 ? "👆 Coloca el tercer punto para cerrar el terreno" :
-             `✅ ${ptCount} puntos — toca "Guardar" o sigue agregando`}
+      {/* Header info finca */}
+      <div style={{ position:"absolute", top:"12px", left:"12px", zIndex:800 }}>
+        <div style={{ background:"rgba(5,14,9,0.92)", border:`1px solid ${T.border}`, borderRadius:"12px", padding:"10px 14px", backdropFilter:"blur(16px)" }}>
+          <div style={{ fontSize:"14px", fontWeight:800, color:T.text, letterSpacing:"-0.02em" }}>
+            {state.farm.name || "Mi Finca"}
           </div>
-          <div style={{ fontSize:"10px", color:"rgba(237,255,244,0.4)" }}>
-            Marca todos los vértices (esquinas) de tu parcela de tierra
+          <div style={{ fontSize:"10px", color:T.textMuted, marginTop:"2px" }}>
+            {state.farm.owner && `${state.farm.owner} · `}{ZONES[state.farm.zone]?.icon} {ZONES[state.farm.zone]?.name}
+          </div>
+          <div style={{ display:"flex", gap:"8px", marginTop:"8px" }}>
+            <div style={{ fontSize:"11px", color:T.green }}>💰 RD${(income/1000).toFixed(0)}K</div>
+            <div style={{ fontSize:"11px", color:T.red }}>📤 RD${(expense/1000).toFixed(0)}K</div>
+            <div style={{ fontSize:"11px", color:T.textMuted }}>🗺️ {state.plots.length} terrenos</div>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* ── FORMULARIO NUEVO TERRENO (bottom sheet) ── */}
-      {showForm && (
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, zIndex:900, background:"rgba(5,14,9,0.98)", border:"1px solid rgba(74,222,128,0.2)", borderRadius:"20px 20px 0 0", padding:"20px 16px 28px", backdropFilter:"blur(20px)", maxHeight:"75%", overflowY:"auto" }}>
-          <div style={{ width:"36px", height:"4px", background:"rgba(74,222,128,0.3)", borderRadius:"2px", margin:"0 auto 16px" }} />
-          <div style={{ fontSize:"14px", fontWeight:800, color:"#86efac", marginBottom:"14px" }}>🌱 Registrar Nuevo Terreno</div>
+      {/* Drawer: Formulario nuevo terreno */}
+      {showAddForm && (
+        <div style={{ position:"absolute", bottom:0, left:0, right:0, zIndex:900, background:"rgba(5,14,9,0.97)", border:`1px solid ${T.border}`, borderRadius:"20px 20px 0 0", padding:"20px 16px", backdropFilter:"blur(20px)" }}>
+          <div style={{ fontSize:"13px", fontWeight:700, color:T.accent, marginBottom:"14px" }}>🌱 Registrar Terreno</div>
           <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px" }}>
-              <Inp label="Nombre" value={plotForm.name} onChange={e=>setPlotForm(f=>({...f,name:e.target.value}))} placeholder="Ej: Parcela Norte" />
+              <Inp label="Nombre del terreno" value={plotForm.name} onChange={e=>setPlotForm(f=>({...f,name:e.target.value}))} placeholder="Ej: Parcela Norte" />
               <Inp label="Área (tareas)" type="number" value={plotForm.area} onChange={e=>setPlotForm(f=>({...f,area:e.target.value}))} placeholder="0" />
             </div>
             <Sel label="Cultivo principal" value={plotForm.crop} onChange={e=>setPlotForm(f=>({...f,crop:e.target.value}))}>
-              {Object.keys(CROPS).map(c=><option key={c} value={c}>{CROPS[c]?.icon} {CROPS[c]?.name}</option>)}
+              {(ZONES[state.farm.zone]?.crops||Object.keys(CROPS)).map(c=><option key={c} value={c}>{CROPS[c]?.icon} {CROPS[c]?.name}</option>)}
+              {Object.keys(CROPS).filter(c=>!ZONES[state.farm.zone]?.crops?.includes(c)).map(c=><option key={c} value={c}>{CROPS[c]?.icon} {CROPS[c]?.name}</option>)}
             </Sel>
             <div>
-              <label style={{ fontSize:"10px", fontWeight:700, color:"rgba(237,255,244,0.4)", letterSpacing:"0.08em", textTransform:"uppercase", display:"block", marginBottom:"6px" }}>Color del terreno</label>
-              <div style={{ display:"flex", gap:"8px", flexWrap:"wrap" }}>
-                {COLORS.map(c=>(
-                  <div key={c} onClick={()=>setPlotForm(f=>({...f,color:c}))} style={{ width:"26px", height:"26px", borderRadius:"7px", background:c, cursor:"pointer", border:`3px solid ${plotForm.color===c?"#fff":"transparent"}`, transition:"all 0.15s", boxShadow:plotForm.color===c?"0 0 8px rgba(255,255,255,0.4)":"none" }} />
+              <label style={{ fontSize:"10px", fontWeight:700, color:T.textMuted, letterSpacing:"0.09em", textTransform:"uppercase", display:"block", marginBottom:"6px" }}>Color del terreno</label>
+              <div style={{ display:"flex", gap:"8px" }}>
+                {PLOT_COLORS.map(c => (
+                  <div key={c} onClick={()=>setPlotForm(f=>({...f,color:c}))} style={{ width:"24px", height:"24px", borderRadius:"6px", background:c, cursor:"pointer", border:`2px solid ${plotForm.color===c?"#fff":"transparent"}`, transition:"all 0.15s" }} />
                 ))}
               </div>
             </div>
-            <Inp label="Notas (opcional)" value={plotForm.notes} onChange={e=>setPlotForm(f=>({...f,notes:e.target.value}))} placeholder="Observaciones..." />
-            <div style={{ display:"flex", gap:"8px", marginTop:"4px" }}>
-              <Btn full onClick={savePlot}>💾 Guardar Terreno</Btn>
+            <Inp label="Notas (opcional)" value={plotForm.notes} onChange={e=>setPlotForm(f=>({...f,notes:e.target.value}))} placeholder="Observaciones del terreno..." />
+            <div style={{ display:"flex", gap:"8px" }}>
+              <Btn full onClick={savePlot}>Guardar Terreno</Btn>
               <Btn variant="outline" onClick={cancelDrawing}>Cancelar</Btn>
             </div>
           </div>
         </div>
       )}
 
-      {/* ── PANEL TERRENO SELECCIONADO ── */}
-      {selPlot && !showForm && (
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, zIndex:900, background:"rgba(5,14,9,0.97)", border:`1px solid ${selPlot.color||"#4ade80"}30`, borderRadius:"20px 20px 0 0", padding:"18px 16px 28px", backdropFilter:"blur(20px)" }}>
-          <div style={{ width:"36px", height:"4px", background:"rgba(74,222,128,0.3)", borderRadius:"2px", margin:"0 auto 14px" }} />
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"12px" }}>
+      {/* Panel: Terreno seleccionado */}
+      {selPlot && !showAddForm && (
+        <div style={{ position:"absolute", bottom:0, left:0, right:0, zIndex:900, background:"rgba(5,14,9,0.97)", border:`1px solid ${selPlot.color||T.border}40`, borderRadius:"20px 20px 0 0", padding:"18px 16px", backdropFilter:"blur(20px)", maxHeight:"60%" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"14px" }}>
             <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
-              <div style={{ width:"12px", height:"12px", borderRadius:"50%", background:selPlot.color||"#4ade80", boxShadow:`0 0 6px ${selPlot.color||"#4ade80"}` }} />
+              <div style={{ width:"10px", height:"10px", borderRadius:"50%", background:selPlot.color||T.green }} />
               <div>
-                <div style={{ fontSize:"16px", fontWeight:800, color:"#edfff4" }}>{selPlot.name}</div>
-                <div style={{ fontSize:"11px", color:"rgba(237,255,244,0.5)", marginTop:"2px" }}>{selCrop?.icon} {selCrop?.name} · {selPlot.area} tareas</div>
+                <div style={{ fontSize:"15px", fontWeight:700 }}>{selPlot.name}</div>
+                <div style={{ fontSize:"11px", color:T.textSec }}>{selCrop?.icon} {selCrop?.name} · {selPlot.area} tareas</div>
               </div>
             </div>
-            <button onClick={()=>setSelectedPlot(null)} style={{ background:"rgba(255,255,255,0.08)", border:"none", color:"rgba(237,255,244,0.6)", fontSize:"16px", cursor:"pointer", borderRadius:"50%", width:"28px", height:"28px", display:"flex", alignItems:"center", justifyContent:"center" }}>×</button>
+            <button onClick={()=>setSelectedPlot(null)} style={{ background:"none", border:"none", color:T.textMuted, fontSize:"18px", cursor:"pointer" }}>×</button>
           </div>
 
-          {/* Etapa de cultivo */}
-          {selCrop?.stage && (
-            <div style={{ marginBottom:"12px", padding:"10px 12px", background:"rgba(255,255,255,0.04)", borderRadius:"10px" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"5px" }}>
-                {selCrop.stage.map((s,i) => (
-                  <span key={i} style={{ fontSize:"9px", color:i<=selPlot.stage?selPlot.color||"#4ade80":"rgba(237,255,244,0.25)", fontWeight:i===selPlot.stage?800:400 }}>{s}</span>
-                ))}
-              </div>
-              <div style={{ height:"4px", background:"rgba(74,222,128,0.1)", borderRadius:"2px" }}>
-                <div style={{ height:"100%", width:`${((selPlot.stage+1)/selCrop.stage.length)*100}%`, background:selPlot.color||"#4ade80", borderRadius:"2px", transition:"width 0.5s" }} />
-              </div>
+          {/* Etapa */}
+          <div style={{ marginBottom:"12px" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"4px" }}>
+              {selCrop?.stage.map((s,i) => (
+                <span key={i} style={{ fontSize:"10px", color:i<=selPlot.stage?selPlot.color||T.green:T.textMuted, fontWeight:i===selPlot.stage?700:400 }}>{s}</span>
+              ))}
             </div>
-          )}
+            <div style={{ height:"4px", background:T.border, borderRadius:"2px" }}>
+              <div style={{ height:"100%", width:`${((selPlot.stage+1)/selCrop.stage.length)*100}%`, background:selPlot.color||T.gradGreen, borderRadius:"2px", transition:"width 0.5s" }} />
+            </div>
+          </div>
 
           {/* Stats */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"8px", marginBottom:"12px" }}>
             {[
-              { label:"Ingresos",  val:`RD$${((selPlot.transactions||[]).filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0)/1000).toFixed(1)}K`,  color:"#4ade80" },
-              { label:"Gastos",    val:`RD$${((selPlot.transactions||[]).filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0)/1000).toFixed(1)}K`, color:"#f87171" },
-              { label:"Facturas",  val:(selPlot.invoices||[]).length,  color:"#60a5fa" },
+              { label:"Ingresos", value:`RD$${((selPlot.transactions||[]).filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0)/1000).toFixed(1)}K`, color:T.green },
+              { label:"Gastos",   value:`RD$${((selPlot.transactions||[]).filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0)/1000).toFixed(1)}K`, color:T.red },
+              { label:"Facturas", value:(selPlot.invoices||[]).length, color:T.blue },
             ].map(k=>(
-              <div key={k.label} style={{ background:"rgba(255,255,255,0.05)", borderRadius:"10px", padding:"10px 8px", textAlign:"center" }}>
-                <div style={{ fontSize:"14px", fontWeight:800, color:k.color }}>{k.val}</div>
-                <div style={{ fontSize:"9px", color:"rgba(237,255,244,0.4)", marginTop:"2px" }}>{k.label}</div>
+              <div key={k.label} style={{ background:"rgba(255,255,255,0.04)", borderRadius:"8px", padding:"10px 8px", textAlign:"center" }}>
+                <div style={{ fontSize:"13px", fontWeight:700, color:k.color }}>{k.value}</div>
+                <div style={{ fontSize:"10px", color:T.textMuted }}>{k.label}</div>
               </div>
             ))}
           </div>
 
           <div style={{ display:"flex", gap:"8px" }}>
-            <Btn full onClick={() => { setTab("plots"); setSelectedPlot(null); }}>Ver detalle completo →</Btn>
-            <Btn variant="red" onClick={() => { setState(s=>({...s,plots:s.plots.filter(p=>p.id!==selPlot.id)})); setSelectedPlot(null); toast("Terreno eliminado"); }}>🗑</Btn>
+            <Btn size="sm" variant="ghost" full onClick={() => { setTab("plots"); setSelectedPlot(null); }}>Ver detalle completo</Btn>
+            <Btn size="sm" variant="red" onClick={() => deletePlot(selPlot.id)}>🗑</Btn>
           </div>
         </div>
       )}
     </div>
   );
 };
-
 
 /* ═══════════════════════════════════════════
    MÓDULO: PARCELAS (detalle + cultivos + facturas)
@@ -1468,7 +1401,7 @@ const Tasks = ({ state, setState }) => {
 ═══════════════════════════════════════════ */
 const AIChat = ({ state }) => {
   const [messages, setMessages] = useState([
-    { role:"assistant", content:`¡Buen día! Soy tu agrónomo virtual 🌱\n\n${state.farm.name ? `Conozco tu finca **${state.farm.name}** en ${ZONES[state.farm.zone]?.name}` : "Configura tu finca en ⚙️ para que pueda personalizar mis consejos"}${state.plots.length>0?` con ${state.plots.length} terrenos activos`:""}.\n\n¿En qué puedo ayudarte hoy?
+    { role:"assistant", content:`¡Buen día! Soy tu agrónomo virtual 🌱\n\n${state.farm.name ? `Conozco tu finca **${state.farm.name}** en ${sanitizeHTML(ZONES[state.farm.zone]?.name||"")}` : "Configura tu finca en ⚙️ para que pueda personalizar mis consejos"}${state.plots.length>0?` con ${state.plots.length} terrenos activos`:""}.\n\n¿En qué puedo ayudarte hoy?
 
 ⚠️ Mis consejos son orientativos. Consulta un agrónomo certificado antes de decisiones importantes.` }
   ]);
@@ -1946,7 +1879,7 @@ const SoilLab = ({ state }) => {
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST",headers:{"Content-Type":"application/json","x-api-key":state.apiKey,"anthropic-version":"2023-06-01"},
-        body:JSON.stringify({model:"claude-opus-4-5",max_tokens:600,messages:[{role:"user",content:`Agricultor dominicano. Análisis de suelo: pH ${ph}, N ${n||"?"}ppm, P ${p||"?"}ppm, K ${k||"?"}ppm, MO ${om||"?"}%. Cultivo: ${CROPS[crop]?.name}. Zona: ${ZONES[state.farm.zone]?.name}. Da recomendaciones en 150 palabras: enmiendas, dosis, productos en RD, orden y tiempo de espera antes de sembrar. Usa unidades locales. Sé directo.`}]})
+        body:JSON.stringify({model:"claude-opus-4-5",max_tokens:600,messages:[{role:"user",content:`Agricultor dominicano. Análisis de suelo: pH ${ph}, N ${n||"?"}ppm, P ${p||"?"}ppm, K ${k||"?"}ppm, MO ${om||"?"}%. Cultivo: ${CROPS[crop]?.name}. Zona: ${sanitizeHTML(ZONES[state.farm.zone]?.name||"")}. Da recomendaciones en 150 palabras: enmiendas, dosis, productos en RD, orden y tiempo de espera antes de sembrar. Usa unidades locales. Sé directo.`}]})
       });
       const data = await res.json();
       setAiRec(data.content?.[0]?.text||"Sin respuesta.");
@@ -2067,7 +2000,7 @@ const WeatherModule = ({ state }) => {
       if (!checkRateLimit()) return;
       const res=await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST",headers:{"Content-Type":"application/json","x-api-key":state.apiKey,"anthropic-version":"2023-06-01"},
-        body:JSON.stringify({model:"claude-opus-4-5",max_tokens:500,messages:[{role:"user",content:`Agricultor en ${ZONES[state.farm.zone]?.name}, RD. Clima: ${weather.temp}°C, humedad ${weather.humidity}%, lluvia ${weather.rain}mm, viento ${weather.wind}km/h. Pronóstico:\n${forecastText}\nCultivo: ${CROPS[selectedCrop]?.name}. ¿Cuáles son los mejores días para: (1) fertilizante foliar, (2) fungicida/pesticida, (3) riego? Indica días y horarios. Máx 150 palabras.`}]})
+        body:JSON.stringify({model:"claude-opus-4-5",max_tokens:500,messages:[{role:"user",content:`Agricultor en ${sanitizeHTML(ZONES[state.farm.zone]?.name||"")}, RD. Clima: ${weather.temp}°C, humedad ${weather.humidity}%, lluvia ${weather.rain}mm, viento ${weather.wind}km/h. Pronóstico:\n${forecastText}\nCultivo: ${CROPS[selectedCrop]?.name}. ¿Cuáles son los mejores días para: (1) fertilizante foliar, (2) fungicida/pesticida, (3) riego? Indica días y horarios. Máx 150 palabras.`}]})
       });
       const data=await res.json();
       setAiWindow(data.content?.[0]?.text||"Sin respuesta.");
@@ -2176,7 +2109,7 @@ const FertilizationGuide = ({ state }) => {
       if (!checkRateLimit()) return;
       const res=await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST",headers:{"Content-Type":"application/json","x-api-key":state.apiKey,"anthropic-version":"2023-06-01"},
-        body:JSON.stringify({model:"claude-opus-4-5",max_tokens:700,messages:[{role:"user",content:`Agricultor dominicano. Cultivo: ${crop?.name}, etapa: ${crop?.stage[plot.stage]}, área: ${plot.area} tareas (${ha.toFixed(2)} ha). Zona: ${ZONES[state.farm.zone]?.name}. NPK requerido: N${crop?.npk[0]}-P${crop?.npk[1]}-K${crop?.npk[2]} kg/ha. pH óptimo: ${crop?.ph}. Dame plan de fertilización en 200 palabras: productos específicos en RD, dosis por tarea y hectárea, forma de aplicación, momento y frecuencia, costo estimado RD$.`}]})
+        body:JSON.stringify({model:"claude-opus-4-5",max_tokens:700,messages:[{role:"user",content:`Agricultor dominicano. Cultivo: ${crop?.name}, etapa: ${crop?.stage[plot.stage]}, área: ${plot.area} tareas (${ha.toFixed(2)} ha). Zona: ${sanitizeHTML(ZONES[state.farm.zone]?.name||"")}. NPK requerido: N${crop?.npk[0]}-P${crop?.npk[1]}-K${crop?.npk[2]} kg/ha. pH óptimo: ${crop?.ph}. Dame plan de fertilización en 200 palabras: productos específicos en RD, dosis por tarea y hectárea, forma de aplicación, momento y frecuencia, costo estimado RD$.`}]})
       });
       const data=await res.json();
       setAiRec(data.content?.[0]?.text||"Sin respuesta.");
@@ -2294,7 +2227,7 @@ const PestDisease = ({ state }) => {
     setAiLoading(true); setAiDiag(""); setSelected(null);
     const msgContent=imgBase64
       ?[{type:"image",source:{type:"base64",media_type:"image/jpeg",data:imgBase64}},{type:"text",text:`Agricultor RD. ${symptoms?"Síntomas: "+symptoms:""}. Identifica la plaga/enfermedad. Responde: 1.Diagnóstico 2.Urgencia 3.Tratamiento inmediato con productos en RD 4.Prevención. Máx 200 palabras.`}]
-      :[{type:"text",text:`Agricultor en ${ZONES[state.farm.zone]?.name}, RD. Síntomas: ${sanitizeInput(symptoms)}. Cultivos: ${state.plots.map(p=>CROPS[p.crop]?.name).join(", ")||"varios"}. Diagnóstica plaga/enfermedad: 1.Diagnóstico más probable 2.Por qué 3.Urgencia 4.Tratamiento con productos RD y dosis. Máx 200 palabras.`}];
+      :[{type:"text",text:`Agricultor en ${sanitizeHTML(ZONES[state.farm.zone]?.name||"")}, RD. Síntomas: ${sanitizeInput(symptoms)}. Cultivos: ${state.plots.map(p=>CROPS[p.crop]?.name).join(", ")||"varios"}. Diagnóstica plaga/enfermedad: 1.Diagnóstico más probable 2.Por qué 3.Urgencia 4.Tratamiento con productos RD y dosis. Máx 200 palabras.`}];
     try {
       if (!checkRateLimit()) return;
       const res=await fetch("https://api.anthropic.com/v1/messages",{
@@ -2546,7 +2479,7 @@ const IrrigationCalc = ({ state }) => {
       if (!checkRateLimit()) return;
       const res=await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST",headers:{"Content-Type":"application/json","x-api-key":state.apiKey,"anthropic-version":"2023-06-01"},
-        body:JSON.stringify({model:"claude-opus-4-5",max_tokens:400,messages:[{role:"user",content:`Agricultor en ${ZONES[state.farm.zone]?.name}, RD. ${CROPS[crop]?.name}, ${area} tareas, suelo ${SOIL_TYPES[soilType]?.name}, sistema ${METHODS[method]?.name}, temp ${temp}°C. ETc: ${result.etc}mm/día, ${result.litrosDia}L/día. Recomendaciones de riego en 120 palabras: horario, señales estrés hídrico, ajuste época lluviosa vs seca RD.`}]})
+        body:JSON.stringify({model:"claude-opus-4-5",max_tokens:400,messages:[{role:"user",content:`Agricultor en ${sanitizeHTML(ZONES[state.farm.zone]?.name||"")}, RD. ${CROPS[crop]?.name}, ${area} tareas, suelo ${SOIL_TYPES[soilType]?.name}, sistema ${METHODS[method]?.name}, temp ${temp}°C. ETc: ${result.etc}mm/día, ${result.litrosDia}L/día. Recomendaciones de riego en 120 palabras: horario, señales estrés hídrico, ajuste época lluviosa vs seca RD.`}]})
       });
       const data=await res.json();
       setAiRec(data.content?.[0]?.text||"");
@@ -2635,7 +2568,7 @@ const MarketCalendar = ({ state }) => {
       if (!checkRateLimit()) return;
       const res=await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST",headers:{"Content-Type":"application/json","x-api-key":state.apiKey,"anthropic-version":"2023-06-01"},
-        body:JSON.stringify({model:"claude-opus-4-5",max_tokens:400,messages:[{role:"user",content:`Agricultor en ${ZONES[state.farm.zone]?.name}, RD. Cultivo: ${CROPS[marketCrop]?.name}. Precio ref: RD$${PRICES_REF[marketCrop]?.min||1000}-${PRICES_REF[marketCrop]?.max||3000}/${PRICES_REF[marketCrop]?.unit||"quintal"}. En 120 palabras: (1) Canales de venta en RD (Merca Santo Domingo, supermercados, exportación), (2) Momento óptimo de venta, (3) Presentación/empaque para mejor precio, (4) Consejo para maximizar ganancia. Sé muy práctico.`}]})
+        body:JSON.stringify({model:"claude-opus-4-5",max_tokens:400,messages:[{role:"user",content:`Agricultor en ${sanitizeHTML(ZONES[state.farm.zone]?.name||"")}, RD. Cultivo: ${CROPS[marketCrop]?.name}. Precio ref: RD$${PRICES_REF[marketCrop]?.min||1000}-${PRICES_REF[marketCrop]?.max||3000}/${PRICES_REF[marketCrop]?.unit||"quintal"}. En 120 palabras: (1) Canales de venta en RD (Merca Santo Domingo, supermercados, exportación), (2) Momento óptimo de venta, (3) Presentación/empaque para mejor precio, (4) Consejo para maximizar ganancia. Sé muy práctico.`}]})
       });
       const data=await res.json();
       setMarketAI(data.content?.[0]?.text||"");
@@ -3383,7 +3316,7 @@ const SmartAlerts = ({ state, setState }) => {
           model:"claude-opus-4-5", max_tokens:800,
           messages:[{ role:"user", content:`Analiza esta finca dominicana y genera alertas críticas:
 
-FINCA: ${state.farm.name} | Zona: ${ZONES[state.farm.zone]?.name} | Fecha: ${nowDate()}
+FINCA: ${state.farm.name} | Zona: ${sanitizeHTML(ZONES[state.farm.zone]?.name||"")} | Fecha: ${nowDate()}
 FINANZAS: Ingresos RD$${income.toLocaleString()}, Gastos RD$${expense.toLocaleString()}, Balance ${income-expense>=0?"positivo":"NEGATIVO"} RD$${Math.abs(income-expense).toLocaleString()}
 TERRENOS: ${plotsInfo||"Sin terrenos"}
 STOCK BAJO: ${lowStock.map(i=>i.name).join(", ")||"ninguno"}
@@ -3693,7 +3626,7 @@ Responde con este JSON exacto:
     setChatInput(""); setChatLoading(true);
     const plot = state.plots.find(p=>p.id===selectedPlot);
     const sys = `Eres el Plant Doctor de AgroPro AI, un fitopatólogo especialista en cultivos de República Dominicana. Ya realizaste este diagnóstico:
-CULTIVO: ${plot?CROPS[plot.crop]?.name:"desconocido"} | ZONA: ${ZONES[state.farm.zone]?.name}
+CULTIVO: ${plot?CROPS[plot.crop]?.name:"desconocido"} | ZONA: ${sanitizeHTML(ZONES[state.farm.zone]?.name||"")}
 DIAGNÓSTICO: ${diagnosis.diagnostico_principal} (${diagnosis.condicion_general}, confianza ${diagnosis.confianza}%)
 AGENTE CAUSAL: ${diagnosis.agente_causal}
 PLAN DE TRATAMIENTO: ${diagnosis.plan_tratamiento?.map(p=>`Paso ${p.paso}: ${p.accion} — ${p.producto_rd} ${p.dosis}`).join(". ")}
@@ -3740,20 +3673,20 @@ Responde como el experto que realizó el diagnóstico. Usa español dominicano. 
       <tr><th>Progresión</th><td>${sanitizeHTML(diagnosis.progresion||"—")}</td></tr>
       <tr><th>Riesgo pérdida cosecha</th><td>${sanitizeHTML(diagnosis.riesgo_perdida)}%</td></tr>
       <tr><th>Tiempo recuperación</th><td>${sanitizeHTML(diagnosis.tiempo_recuperacion||"—")}</td></tr>
-      <tr><th>Cultivo</th><td>${plot?CROPS[plot.crop]?.name:"—"} · ${ZONES[state.farm.zone]?.name}</td></tr>
+      <tr><th>Cultivo</th><td>${plot?CROPS[plot.crop]?.name:"—"} · ${sanitizeHTML(ZONES[state.farm.zone]?.name||"")}</td></tr>
     </table>
     <h2>Síntomas observados</h2>
-    <ul>${(diagnosis.sintomas_observados||[]).map(s=>`<li>${s}</li>`).join("")}</ul>
+    <ul>${(diagnosis.sintomas_observados||[]).map(s=>`<li>${sanitizeHTML(s)}</li>`).join("")}</ul>
     <h2>Causa principal</h2><p>${sanitizeHTML(diagnosis.causa_principal||"—")}</p>
     <h2>Plan de tratamiento</h2>
     ${(diagnosis.plan_tratamiento||[]).map(p=>`<div class="step"><strong>Paso ${sanitizeHTML(p.paso)} [${sanitizeHTML(p.urgencia)}]:</strong> ${sanitizeHTML(p.accion)}<br>
     <em>Producto: ${sanitizeHTML(p.producto_rd)} — Dosis: ${sanitizeHTML(p.dosis)} — ${sanitizeHTML(p.modo_aplicacion)}</em><br>
     <small style="color:#666">Costo estimado: ${sanitizeHTML(p.costo_estimado_rd||"—")}</small></div>`).join("")}
     <h2>Tratamiento orgánico alternativo</h2>
-    <p><strong>Productos:</strong> ${(diagnosis.tratamiento_organico?.productos||[]).join(", ")}</p>
-    <p><strong>Preparación:</strong> ${diagnosis.tratamiento_organico?.preparacion||"—"}</p>
+    <p><strong>Productos:</strong> ${(diagnosis.tratamiento_organico?.productos||[]).map(p=>sanitizeHTML(p)).join(", ")}</p>
+    <p><strong>Preparación:</strong> ${sanitizeHTML(diagnosis.tratamiento_organico?.preparacion||"—")}</p>
     <h2>Prevención futura</h2>
-    <ul>${(diagnosis.prevencion_futura||[]).map(p=>`<li>${p}</li>`).join("")}</ul>
+    <ul>${(diagnosis.prevencion_futura||[]).map(p=>`<li>${sanitizeHTML(p)}</li>`).join("")}</ul>
     <div style="margin-top:24px;padding:16px;background:#fffbeb;border-radius:8px;border-left:4px solid #f59e0b">
     <strong>💡 Nota del Plant Doctor:</strong> ${sanitizeHTML(diagnosis.nota_experto||"—")}</div>
     <div style="margin-top:32px;font-size:11px;color:#999;text-align:center;border-top:1px solid #ddd;padding-top:12px">
@@ -4118,6 +4051,249 @@ Responde como el experto que realizó el diagnóstico. Usa español dominicano. 
 /* ═══════════════════════════════════════════
    TABS CONFIG v8
 ═══════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════
+   MÓDULO: IMPORTAR EXCEL
+═══════════════════════════════════════════ */
+const ExcelImporter = ({ state, setState }) => {
+  const [step, setStep]       = useState("home");
+  const [rows, setRows]       = useState([]);
+  const [missingRows, setMissingRows] = useState([]);
+  const [missingIdx, setMissingIdx]   = useState(0);
+  const [missingVals, setMissingVals] = useState({});
+  const [editMonto, setEditMonto]     = useState({});
+  const [importing, setImporting]     = useState(false);
+  const [doneCount, setDoneCount]     = useState(0);
+  const fileRef = useRef();
+
+  const catOf = (r) => {
+    const s = r.toLowerCase();
+    if (/haitiano|haino|d[ií]as|mano de obra|desayuno|comida|colmado|carlos/.test(s)) return "mano_obra";
+    if (/arado|tractor|drone|cam[ií][oó]n|flete|combustible|aro y sang/.test(s)) return "combustible_transporte";
+    if (/abono|[áa]bono|agrotasa|agro\.| figueroa|pablo agro|fertiliz/.test(s)) return "fertilizante";
+    if (/cepa|sepa|siembra|rama|planta|mais|ma[íi]z|raisador|estacada|semilla/.test(s)) return "semilla";
+    if (/fumig|quema|pesticida|barrica/.test(s)) return "pesticida";
+    if (/dren|riego|r[íi]o|regulo/.test(s)) return "sistema_riego";
+    return "otro_gasto";
+  };
+
+  const CAT_LABEL = {
+    mano_obra:"👷 Mano de obra", combustible_transporte:"🚛 Combustible/Transporte",
+    fertilizante:"🌿 Fertilizante", semilla:"🌱 Semilla/Planta",
+    pesticida:"💊 Pesticida", sistema_riego:"💧 Riego", otro_gasto:"📦 Otro",
+  };
+
+  const handleFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 10*1024*1024) { toast("Máximo 10MB","error"); return; }
+    if (!file.name.match(/\.(xlsx|xls)$/i)) { toast("Solo archivos .xlsx/.xls","error"); return; }
+    const XLSX = window.XLSX;
+    if (!XLSX) { loadXLSX((X) => { window.XLSX=X; processFile(file); }); return; }
+    processFile(file);
+    e.target.value="";
+  };
+
+  const processFile = (file) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const XLSX = window.XLSX;
+        const wb = XLSX.read(ev.target.result, { type:"binary", cellDates:true });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(ws, { header:1, defval:null });
+        const validRows=[], noMontoRows=[];
+        raw.forEach((row,i) => {
+          if (i < 2) return;
+          const razon = row[0] ? String(row[0]).trim() : "";
+          if (!razon || razon.length < 2) return;
+          const allCaps = razon === razon.toUpperCase() && razon.length > 4 && !row[3] && !row[4];
+          if (allCaps) return;
+          const fecha = row[1] ? (row[1] instanceof Date ? row[1].toISOString().slice(0,10) : String(row[1]).slice(0,10).replace(/nan/i,"")) : "";
+          const otros = row[2] ? String(row[2]).trim() : "";
+          const monto = row[3] ?? row[4];
+          const cat   = catOf(razon);
+          const desc  = otros ? razon+" — "+otros : razon;
+          const id    = uid();
+          if (monto !== null && monto !== undefined && !isNaN(Number(String(monto).replace(/,/g,"")))) {
+            validRows.push({ id, razon, fecha, otros, desc, monto:Number(String(monto).replace(/,/g,"")), cat });
+          } else {
+            noMontoRows.push({ id, razon, fecha, otros, desc, cat });
+          }
+        });
+        if (!validRows.length && !noMontoRows.length) { toast("No se encontraron datos en el archivo","error"); return; }
+        setRows(validRows); setMissingRows(noMontoRows);
+        setMissingIdx(0); setMissingVals({}); setEditMonto({});
+        setStep(noMontoRows.length > 0 ? "missing" : "preview");
+        toast(`${validRows.length} gastos encontrados ✓`);
+      } catch(err) { console.error(err); toast("Error leyendo Excel","error"); }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const doImport = () => {
+    setImporting(true);
+    const today = nowDate();
+    const allRows = [...rows];
+    Object.entries(missingVals).forEach(([id,val]) => {
+      const mr = missingRows.find(r=>r.id===id);
+      if (mr && val && !isNaN(Number(val)) && Number(val)>0)
+        allRows.push({...mr, monto:Number(val)});
+    });
+    const newTxs = allRows.map(r => ({
+      id: uid(),
+      type: "expense",
+      category: r.cat,
+      description: r.desc,
+      amount: editMonto[r.id]!==undefined ? safeAmount(editMonto[r.id]) : r.monto,
+      date: r.fecha || today,
+      plotId: "", plotName: "General",
+      notes: r.otros || "",
+      createdAt: new Date().toISOString(),
+      fromExcel: true,
+    }));
+    setState(s => ({ ...s, transactions:[...newTxs, ...(s.transactions||[])] }));
+    setDoneCount(newTxs.length);
+    setStep("done");
+    setImporting(false);
+    toast(newTxs.length+" gastos importados ✓");
+  };
+
+  const totalPreview = rows.reduce((s,r) => s + (editMonto[r.id]!==undefined ? safeAmount(editMonto[r.id]) : r.monto), 0);
+
+  /* HOME */
+  if (step==="home") return (
+    <div style={{padding:"0 16px 24px"}}>
+      <SectionTitle icon="📊" sub="Importa tu archivo de gastos .xlsx directamente">Importar Excel</SectionTitle>
+      <div style={{background:"linear-gradient(135deg,rgba(20,83,45,0.45),rgba(5,14,9,0.95))",border:`1px solid ${T.green}25`,borderRadius:T.radiusLg,padding:"24px",marginBottom:"14px"}}>
+        <div style={{fontSize:"38px",marginBottom:"12px"}}>📂</div>
+        <div style={{fontSize:"15px",fontWeight:800,color:T.text,marginBottom:"8px"}}>Importar gastos desde Excel</div>
+        <p style={{fontSize:"12px",color:T.textSec,lineHeight:"1.7",marginBottom:"16px"}}>
+          Sube tu archivo <strong style={{color:T.accent}}>.xlsx</strong> con columnas <strong style={{color:T.accent}}>Razón / Fecha / Descripción / Monto</strong>.<br/>
+          Los gastos se importan como <strong style={{color:T.gold}}>gastos generales sin terreno</strong> — luego los asignas a cada parcela en Finanzas.
+        </p>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginBottom:"16px"}}>
+          {[["📋","Razón","Qué se compró o pagó"],["📅","Fecha","Cuándo ocurrió"],["📝","Descripción","Notas adicionales"],["💰","Monto","Valor en RD$"]].map(([ic,t,s])=>(
+            <div key={t} style={{padding:"10px",background:"rgba(74,222,128,0.06)",borderRadius:"10px",border:`1px solid ${T.border}`}}>
+              <div style={{fontSize:"16px",marginBottom:"3px"}}>{ic}</div>
+              <div style={{fontSize:"11px",fontWeight:700,color:T.accent}}>{t}</div>
+              <div style={{fontSize:"10px",color:T.textMuted}}>{s}</div>
+            </div>
+          ))}
+        </div>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={handleFile}/>
+        <Btn full onClick={()=>fileRef.current?.click()} style={{fontSize:"14px",padding:"14px"}}>
+          📂 Seleccionar archivo Excel (.xlsx)
+        </Btn>
+      </div>
+      {(state.transactions||[]).filter(t=>t.fromExcel).length > 0 && (
+        <Card style={{padding:"14px"}}>
+          <div style={{fontSize:"12px",fontWeight:700,color:T.accent,marginBottom:"4px"}}>📊 Importaciones anteriores</div>
+          <div style={{fontSize:"12px",color:T.textSec}}>{(state.transactions||[]).filter(t=>t.fromExcel).length} gastos importados desde Excel</div>
+          <div style={{fontSize:"11px",color:T.green,fontWeight:700,marginTop:"4px"}}>
+            Total: RD${((state.transactions||[]).filter(t=>t.fromExcel).reduce((s,t)=>s+t.amount,0)).toLocaleString("es-DO")}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+
+  /* MISSING — preguntar monto uno por uno */
+  if (step==="missing") {
+    const cur = missingRows[missingIdx];
+    const done = missingIdx >= missingRows.length;
+    if (done) { setStep("preview"); return null; }
+    return (
+      <div style={{padding:"0 16px 24px"}}>
+        <div style={{padding:"10px 14px",background:"rgba(251,191,36,0.08)",border:`1px solid ${T.gold}25`,borderRadius:"10px",marginBottom:"16px"}}>
+          <div style={{fontSize:"12px",fontWeight:700,color:T.gold}}>⚠️ {missingRows.length - missingIdx} gasto{missingRows.length-missingIdx!==1?"s":""} sin monto</div>
+          <div style={{fontSize:"11px",color:T.textSec,marginTop:"3px"}}>Indica el monto o salta si no aplica</div>
+        </div>
+        <Card style={{padding:"18px",marginBottom:"14px"}}>
+          <div style={{fontSize:"10px",color:T.textMuted,marginBottom:"8px",textTransform:"uppercase",fontWeight:700}}>Gasto {missingIdx+1} de {missingRows.length}</div>
+          <div style={{fontSize:"15px",fontWeight:700,color:T.text,marginBottom:"6px"}}>{cur.razon}</div>
+          {cur.fecha&&<div style={{fontSize:"11px",color:T.textMuted,marginBottom:"4px"}}>📅 {cur.fecha}</div>}
+          {cur.otros&&<div style={{fontSize:"11px",color:T.textSec,marginBottom:"10px"}}>📝 {cur.otros}</div>}
+          <Badge color={T.blue} size="sm">{CAT_LABEL[cur.cat]}</Badge>
+          <div style={{marginTop:"12px"}}>
+            <Inp label="¿Cuánto costó? (RD$)" type="number"
+              value={missingVals[cur.id]||""}
+              onChange={e=>setMissingVals(v=>({...v,[cur.id]:e.target.value}))}
+              placeholder="Ej: 15000" />
+          </div>
+        </Card>
+        <div style={{height:"4px",background:T.border,borderRadius:"2px",marginBottom:"14px"}}>
+          <div style={{height:"100%",width:`${((missingIdx)/missingRows.length)*100}%`,background:T.gradGreen,borderRadius:"2px"}}/>
+        </div>
+        <div style={{display:"flex",gap:"8px"}}>
+          <Btn variant="outline" onClick={()=>{ setMissingIdx(i=>i+1<missingRows.length?i+1:missingRows.length); if(missingIdx+1>=missingRows.length)setStep("preview"); }}>
+            Saltar →
+          </Btn>
+          <Btn full onClick={()=>{ setMissingIdx(i=>{ const ni=i+1; if(ni>=missingRows.length)setStep("preview"); return ni<missingRows.length?ni:missingRows.length; }); }}>
+            {missingVals[cur.id] ? "Guardar y continuar →" : "Sin monto — Continuar →"}
+          </Btn>
+        </div>
+      </div>
+    );
+  }
+
+  /* PREVIEW */
+  if (step==="preview") return (
+    <div style={{padding:"0 16px 24px",overflowY:"auto",maxHeight:"100%"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px",flexWrap:"wrap",gap:"8px"}}>
+        <div>
+          <div style={{fontSize:"15px",fontWeight:800,color:T.text}}>{rows.length} gastos listos para importar</div>
+          <div style={{fontSize:"13px",color:T.green,fontWeight:700}}>Total: RD${totalPreview.toLocaleString("es-DO")}</div>
+        </div>
+        <div style={{display:"flex",gap:"8px"}}>
+          <Btn variant="outline" size="sm" onClick={()=>setStep("home")}>← Cancelar</Btn>
+          <Btn size="sm" onClick={doImport} disabled={importing}>
+            {importing?<><Spinner size={13}/> Importando...</>:"✅ Importar todo"}
+          </Btn>
+        </div>
+      </div>
+      <div style={{background:"rgba(74,222,128,0.06)",border:`1px solid ${T.green}20`,borderRadius:"10px",padding:"10px 14px",marginBottom:"12px",fontSize:"11px",color:T.textSec}}>
+        💡 Puedes editar los montos antes de importar. Después en <strong style={{color:T.accent}}>Finanzas</strong> los asignas a tus terrenos.
+      </div>
+      {rows.map(r=>(
+        <div key={r.id} style={{display:"flex",gap:"10px",alignItems:"center",padding:"10px 12px",background:T.bgCard,border:`1px solid ${T.border}`,borderRadius:"11px",marginBottom:"7px"}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:"12px",fontWeight:600,color:T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.razon}</div>
+            <div style={{fontSize:"10px",color:T.textMuted,marginTop:"2px"}}>
+              {r.fecha&&<span>📅 {r.fecha} · </span>}{CAT_LABEL[r.cat]}
+            </div>
+          </div>
+          <div>
+            <input type="number"
+              value={editMonto[r.id]!==undefined?editMonto[r.id]:r.monto}
+              onChange={e=>setEditMonto(a=>({...a,[r.id]:e.target.value}))}
+              style={{width:"88px",background:"rgba(255,255,255,0.06)",border:`1px solid ${T.border}`,borderRadius:"7px",padding:"5px 8px",color:T.green,fontSize:"12px",fontWeight:700,textAlign:"right"}}/>
+            <div style={{fontSize:"9px",color:T.textMuted,textAlign:"right",marginTop:"1px"}}>RD$</div>
+          </div>
+        </div>
+      ))}
+      <Btn full onClick={doImport} disabled={importing} style={{marginTop:"10px",padding:"14px"}}>
+        {importing?<><Spinner size={14}/> Importando...</>:`✅ Importar ${rows.length} gastos — RD${totalPreview.toLocaleString("es-DO")}`}
+      </Btn>
+    </div>
+  );
+
+  /* DONE */
+  if (step==="done") return (
+    <div style={{padding:"60px 24px",textAlign:"center"}}>
+      <div style={{fontSize:"52px",marginBottom:"16px"}}>✅</div>
+      <div style={{fontSize:"18px",fontWeight:800,color:T.text,marginBottom:"8px"}}>{doneCount} gastos importados</div>
+      <div style={{fontSize:"13px",color:T.textSec,lineHeight:"1.7",marginBottom:"24px"}}>
+        Están en <strong style={{color:T.accent}}>Finanzas → Gastos</strong> como gastos generales.<br/>
+        Toca cualquier gasto para asignarlo a un terreno.
+      </div>
+      <Btn full onClick={()=>setStep("home")}>📂 Importar otro archivo</Btn>
+    </div>
+  );
+
+  return null;
+};
+
 const TABS = [
   { id:"map",        icon:"📊", label:"Mapa",           short:"Inicio" },
   { id:"plantdoc",   icon:"🌿", label:"Plant Doctor",   short:"PlantDoc" },
@@ -4137,6 +4313,7 @@ const TABS = [
   { id:"tasks",      icon:"🗓️", label:"Agenda",         short:"Agenda" },
   { id:"export",     icon:"📤", label:"Exportar",       short:"Export" },
   { id:"ai",         icon:"🤖", label:"Agrónomo",       short:"IA" },
+  { id:"excel",      icon:"📊", label:"Excel",          short:"Excel" },
   { id:"config",     icon:"⚙️", label:"Config.",        short:"Config" },
 ];
 
@@ -4170,7 +4347,7 @@ const injectCSP = () => {
     "worker-src 'none'",
     "object-src 'none'",
     "base-uri 'self'", "geolocation=(self)", "camera=(self)", "microphone=()",
-    // HSTS enforced via netlify.toml Strict-Transport-Security header
+    // HSTS + X-Content-Type-Options: nosniff enforced via netlify.toml server headers
   ].join("; ");
   document.head.prepend(meta);
 };
@@ -4185,7 +4362,7 @@ export default function App() {
   const [tab, setTab] = useState("map");
 
   // Seguridad: CSP en montaje
-  useEffect(() => { injectCSP(); }, []);
+  useEffect(() => { injectCSP(); loadXLSX(()=>{}); }, []);
 
   // Persistencia automática
   useEffect(() => {
@@ -4240,6 +4417,7 @@ export default function App() {
     tasks:      <Tasks      state={state} setState={setState} />,
     export:     <ExportReports state={state} />,
     ai:         <AIChat     state={state} />,
+    excel:      <ExcelImporter state={state} setState={setState} />,
     config:     <Config     state={state} setState={setState} onReset={handleReset} />,
   };
 
