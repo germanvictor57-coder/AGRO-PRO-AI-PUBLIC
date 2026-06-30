@@ -402,12 +402,17 @@ const MapDashboard = ({ state, setState, setTab }) => {
   /* ── Mount map ── */
   useEffect(() => {
     let dead = false;
-    loadLeaflet((Lf) => {
+
+    const initMap = (Lf) => {
       if (dead || mapInst.current || !mapRef.current) return;
-      // Set explicit pixel size BEFORE creating map (Leaflet requirement)
       const container = mapRef.current;
-      container.style.width  = "100%";
-      container.style.height = "100%";
+
+      // Retry until container has real pixel size (Leaflet requirement)
+      const rect = container.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) {
+        setTimeout(() => { if (!dead) initMap(Lf); }, 200);
+        return;
+      }
 
       const center = (state.farm.lat && state.farm.lng)
         ? [parseFloat(state.farm.lat), parseFloat(state.farm.lng)]
@@ -420,27 +425,32 @@ const MapDashboard = ({ state, setState, setTab }) => {
         preferCanvas: true,
       });
 
-      // Satellite tiles
       Lf.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        { maxZoom:20 }
+        { maxZoom:20, attribution:"" }
       ).addTo(map);
 
-      // Labels overlay
       Lf.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        { maxZoom:20, opacity:0.7 }
+        { maxZoom:20, opacity:0.7, attribution:"" }
       ).addTo(map);
 
-      // Zoom control bottom-right
       Lf.control.zoom({ position:"bottomright" }).addTo(map);
 
       mapInst.current = map;
+
+      // Force tile recalculation after DOM settles
+      setTimeout(() => { if (!dead && mapInst.current) mapInst.current.invalidateSize(); }, 100);
+      setTimeout(() => { if (!dead && mapInst.current) mapInst.current.invalidateSize(); }, 600);
+
       if (!dead) {
         setReady(true);
         drawAllPlots(map, Lf, state.plots);
       }
-    });
+    };
+
+    loadLeaflet(initMap);
+
     return () => {
       dead = true;
       if (mapInst.current) { try { mapInst.current.remove(); } catch(e){} mapInst.current = null; }
