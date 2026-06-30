@@ -379,301 +379,323 @@ const defaultState = () => ({
    MÓDULO: MAPA SATELITAL (Dashboard)
 ═══════════════════════════════════════════ */
 const MapDashboard = ({ state, setState, setTab }) => {
-  const mapRef = useRef(null);
-  const mapInstance = useRef(null);
-  const polygonsRef = useRef([]);
-  const drawPointsRef = useRef([]);
-  const drawLayerRef = useRef(null);
-  const markersRef = useRef([]);
-  const [mapReady, setMapReady] = useState(false);
-  const [drawing, setDrawing] = useState(false);
-  const [selectedPlot, setSelectedPlot] = useState(null);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [pendingPolygon, setPendingPolygon] = useState(null);
-  const [plotForm, setPlotForm] = useState({ name:"", crop:"tomate", area:"", notes:"", color:"#4ade80" });
-  const [gpsLoading, setGpsLoading] = useState(false);
+  const mapRef      = useRef(null);
+  const mapInst     = useRef(null);
+  const polyRefs    = useRef([]);
+  const mkRefs      = useRef([]);
+  const drawPts     = useRef([]);
+  const drawPoly    = useRef(null);
+  const drawMks     = useRef([]);
 
-  const PLOT_COLORS = ["#4ade80","#60a5fa","#fbbf24","#f87171","#a78bfa","#f97316","#06b6d4","#ec4899"];
+  const [ready,    setReady]    = useState(false);
+  const [drawing,  setDrawing]  = useState(false);
+  const [ptCount,  setPtCount]  = useState(0);
+  const [selId,    setSelId]    = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [gpsLoad,  setGpsLoad]  = useState(false);
+  const [form, setForm] = useState({ name:"", crop:"tomate", area:"", color:"#4ade80" });
 
+  const COLORS = ["#4ade80","#60a5fa","#fbbf24","#f87171","#a78bfa","#f97316"];
+  const income  = (state.transactions||[]).filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+  const expense = (state.transactions||[]).filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0);
+
+  /* ── Mount map ── */
   useEffect(() => {
+    let dead = false;
     loadLeaflet((Lf) => {
-      if (mapInstance.current) return;
-      const center = state.farm.lat ? [state.farm.lat, state.farm.lng] : [19.4517, -70.6970];
-      const map = Lf.map(mapRef.current, {
-        center, zoom: 15, zoomControl: true,
-        attributionControl: true,
+      if (dead || mapInst.current || !mapRef.current) return;
+      // Set explicit pixel size BEFORE creating map (Leaflet requirement)
+      const container = mapRef.current;
+      container.style.width  = "100%";
+      container.style.height = "100%";
+
+      const center = (state.farm.lat && state.farm.lng)
+        ? [parseFloat(state.farm.lat), parseFloat(state.farm.lng)]
+        : [19.4517, -70.6970];
+
+      const map = Lf.map(container, {
+        center, zoom: 15,
+        zoomControl: false,
+        attributionControl: false,
+        preferCanvas: true,
       });
 
-      // Satélite ESRI
+      // Satellite tiles
       Lf.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        { attribution:"Esri", maxZoom:19 }
+        { maxZoom:20 }
       ).addTo(map);
 
       // Labels overlay
       Lf.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        { opacity:0.5, maxZoom:19 }
+        { maxZoom:20, opacity:0.7 }
       ).addTo(map);
 
-      mapInstance.current = map;
-      setMapReady(true);
-      renderPlots(map, Lf, state.plots);
+      // Zoom control bottom-right
+      Lf.control.zoom({ position:"bottomright" }).addTo(map);
+
+      mapInst.current = map;
+      if (!dead) {
+        setReady(true);
+        drawAllPlots(map, Lf, state.plots);
+      }
     });
-    return () => { if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; } };
+    return () => {
+      dead = true;
+      if (mapInst.current) { try { mapInst.current.remove(); } catch(e){} mapInst.current = null; }
+    };
   }, []);
 
-  // Re-render plots when state changes
+  /* ── Redraw plots on change ── */
   useEffect(() => {
-    if (!mapInstance.current || !mapReady) return;
-    renderPlots(mapInstance.current, window.L, state.plots);
-  }, [state.plots, mapReady]);
+    if (!mapInst.current || !ready || !window.L) return;
+    drawAllPlots(mapInst.current, window.L, state.plots);
+  }, [state.plots, ready]);
 
-  const renderPlots = (map, Lf, plots) => {
-    // Limpiar capas anteriores
-    polygonsRef.current.forEach(l => { try { map.removeLayer(l); } catch{} });
-    markersRef.current.forEach(l => { try { map.removeLayer(l); } catch{} });
-    polygonsRef.current = [];
-    markersRef.current = [];
-
-    plots.forEach(plot => {
+  const drawAllPlots = (map, Lf, plots) => {
+    polyRefs.current.forEach(l => { try{map.removeLayer(l);}catch(e){} });
+    mkRefs.current.forEach(l => { try{map.removeLayer(l);}catch(e){} });
+    polyRefs.current = []; mkRefs.current = [];
+    (plots||[]).forEach(plot => {
       if (!plot.polygon || plot.polygon.length < 3) return;
-      const color = plot.color || T.green;
+      const color = plot.color || "#4ade80";
       const poly = Lf.polygon(plot.polygon, {
-        color, fillColor:color, fillOpacity:0.25, weight:2.5, dashArray:"4 3",
+        color, fillColor:color, fillOpacity:0.2, weight:2.5,
       }).addTo(map);
-
-      const center = poly.getBounds().getCenter();
-      const label = Lf.divIcon({ className:"", html:`<div class="plot-label">${CROPS[plot.crop]?.icon||"🌱"} ${plot.name}</div>`, iconSize:[0,0], iconAnchor:[-4,-4] });
-      const marker = Lf.marker(center, { icon:label, interactive:false }).addTo(map);
-
-      poly.on("click", () => { setSelectedPlot(plot.id); setShowAddForm(false); });
-      polygonsRef.current.push(poly);
-      markersRef.current.push(marker);
+      poly.on("click", () => { setSelId(plot.id); setShowForm(false); });
+      const ctr = poly.getBounds().getCenter();
+      const icon = Lf.divIcon({
+        className:"",
+        html:`<div style="background:rgba(5,14,9,0.88);border:1.5px solid ${color};border-radius:7px;padding:2px 7px;font-size:11px;font-weight:700;color:${color};white-space:nowrap">${CROPS[plot.crop]?.icon||"🌱"} ${plot.name}</div>`,
+        iconSize:[0,0], iconAnchor:[-4,12]
+      });
+      const mk = Lf.marker(ctr, { icon, interactive:false }).addTo(map);
+      polyRefs.current.push(poly);
+      mkRefs.current.push(mk);
     });
   };
 
-  const startDrawing = () => {
-    if (!mapInstance.current) return;
-    setDrawing(true);
-    drawPointsRef.current = [];
-    setPendingPolygon(null);
-    setSelectedPlot(null);
-    toast("Toca el mapa para marcar los vértices del terreno. Mínimo 3 puntos.","info");
-
-    mapInstance.current.on("click", handleMapClick);
-  };
-
-  const handleMapClick = useCallback((e) => {
-    if (!drawing && drawPointsRef.current.length === 0) return;
-    const pt = [e.latlng.lat, e.latlng.lng];
-    drawPointsRef.current.push(pt);
-
-    // Preview
-    if (drawLayerRef.current) { try { mapInstance.current.removeLayer(drawLayerRef.current); } catch{} }
-    if (drawPointsRef.current.length >= 2) {
-      drawLayerRef.current = window.L.polygon(drawPointsRef.current, {
-        color:T.green, fillColor:T.green, fillOpacity:0.15, weight:2, dashArray:"5 4"
-      }).addTo(mapInstance.current);
-    }
-
-    if (drawPointsRef.current.length >= 3) {
-      setPendingPolygon([...drawPointsRef.current]);
-    }
-  }, [drawing]);
-
-  const finishDrawing = () => {
-    if (!mapInstance.current) return;
-    mapInstance.current.off("click", handleMapClick);
-    setDrawing(false);
-    if (drawPointsRef.current.length >= 3) {
-      setPendingPolygon([...drawPointsRef.current]);
-      setShowAddForm(true);
-      setPlotForm({ name:"", crop:ZONES[state.farm.zone]?.crops?.[0]||"tomate", area:"", notes:"", color:PLOT_COLORS[state.plots.length % PLOT_COLORS.length] });
-    } else {
-      toast("Necesitas al menos 3 puntos","error");
-      if (drawLayerRef.current) { try { mapInstance.current.removeLayer(drawLayerRef.current); } catch{} }
-    }
-  };
-
-  const cancelDrawing = () => {
-    if (mapInstance.current) mapInstance.current.off("click", handleMapClick);
-    setDrawing(false);
-    if (drawLayerRef.current) { try { mapInstance.current.removeLayer(drawLayerRef.current); } catch{} }
-    drawPointsRef.current = [];
-    setPendingPolygon(null);
-    setShowAddForm(false);
-  };
-
-  const savePlot = () => {
-    if (!plotForm.name || !pendingPolygon) { toast("Agrega el nombre del terreno","error"); return; }
-    const newPlot = {
-      id: uid(), name:plotForm.name, crop:plotForm.crop, area:Number(plotForm.area)||0,
-      stage:0, notes:plotForm.notes, color:plotForm.color,
-      lat:pendingPolygon[0][0], lng:pendingPolygon[0][1],
-      polygon:pendingPolygon,
-      invoices:[], transactions:[],
-      createdAt: nowDate(),
-    };
-    setState(s => ({ ...s, plots:[...s.plots, newPlot] }));
-    if (drawLayerRef.current) { try { mapInstance.current.removeLayer(drawLayerRef.current); } catch{} }
-    drawPointsRef.current = [];
-    setPendingPolygon(null);
-    setShowAddForm(false);
-    toast(`Terreno "${plotForm.name}" registrado ✓`);
-  };
-
-  const deletePlot = (id) => {
-    setState(s => ({ ...s, plots:s.plots.filter(p=>p.id!==id) }));
-    setSelectedPlot(null);
-    toast("Terreno eliminado");
-  };
-
-  const centerOnFarm = () => {
-    if (!mapInstance.current) return;
+  /* ── GPS center ── */
+  const goToFarm = () => {
+    const map = mapInst.current;
+    if (!map) return;
     if (state.farm.lat) {
-      mapInstance.current.setView([state.farm.lat, state.farm.lng], 16);
+      map.setView([parseFloat(state.farm.lat), parseFloat(state.farm.lng)], 17);
     } else {
-      setGpsLoading(true);
+      setGpsLoad(true);
       navigator.geolocation?.getCurrentPosition(pos => {
         const { latitude:lat, longitude:lng } = pos.coords;
         setState(s => ({ ...s, farm:{ ...s.farm, lat, lng } }));
-        mapInstance.current.setView([lat, lng], 17);
-        setGpsLoading(false);
+        map.setView([lat, lng], 17);
+        setGpsLoad(false);
         toast("Ubicación obtenida ✓");
-      }, () => { setGpsLoading(false); toast("No se pudo obtener GPS","error"); }, { enableHighAccuracy:true });
+      }, () => { setGpsLoad(false); toast("No se pudo obtener GPS","error"); },
+      { enableHighAccuracy:true, timeout:12000 });
     }
   };
 
-  const selPlot = selectedPlot ? state.plots.find(p=>p.id===selectedPlot) : null;
-  const selCrop = selPlot ? CROPS[selPlot.crop] : null;
-  const income  = state.transactions.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
-  const expense = state.transactions.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0) +
-                  state.plots.reduce((s,p)=>(p.transactions||[]).filter(t=>t.type==="expense").reduce((ss,t)=>ss+t.amount,0)+s,0);
+  /* ── Draw handlers ── */
+  const onMapClick = useCallback((e) => {
+    const Lf = window.L;
+    if (!Lf) return;
+    const pt = [e.latlng.lat, e.latlng.lng];
+    drawPts.current.push(pt);
+    setPtCount(n => n + 1);
 
+    const dotIcon = Lf.divIcon({
+      className:"",
+      html:`<div style="width:10px;height:10px;border-radius:50%;background:#4ade80;border:2px solid #fff;box-shadow:0 0 5px #4ade80"></div>`,
+      iconSize:[10,10], iconAnchor:[5,5]
+    });
+    drawMks.current.push(Lf.marker(pt, { icon:dotIcon }).addTo(mapInst.current));
+
+    if (drawPoly.current) { try{mapInst.current.removeLayer(drawPoly.current);}catch(e){} }
+    if (drawPts.current.length >= 2) {
+      drawPoly.current = Lf.polygon(drawPts.current, {
+        color:"#4ade80", fillColor:"#4ade80", fillOpacity:0.1, weight:2, dashArray:"6 3"
+      }).addTo(mapInst.current);
+    }
+  }, []);
+
+  const startDraw = () => {
+    if (!mapInst.current) { toast("El mapa está cargando…","error"); return; }
+    setDrawing(true); setSelId(null); setShowForm(false);
+    drawPts.current = []; setPtCount(0);
+    mapInst.current.on("click", onMapClick);
+    mapInst.current.getContainer().style.cursor = "crosshair";
+    toast("Toca el mapa para marcar los límites del terreno");
+  };
+
+  const finishDraw = () => {
+    if (!mapInst.current) return;
+    mapInst.current.off("click", onMapClick);
+    mapInst.current.getContainer().style.cursor = "";
+    setDrawing(false);
+    if (drawPts.current.length >= 3) {
+      const defaultCrop = ZONES[state.farm.zone]?.crops?.[0] || "tomate";
+      setForm({ name:"", crop:defaultCrop, area:"", color:COLORS[state.plots.length % COLORS.length] });
+      setShowForm(true);
+    } else {
+      toast("Necesitas al menos 3 puntos","error");
+      clearDraw();
+    }
+  };
+
+  const clearDraw = () => {
+    const map = mapInst.current;
+    if (!map) return;
+    drawMks.current.forEach(m => { try{map.removeLayer(m);}catch(e){} });
+    drawMks.current = [];
+    if (drawPoly.current) { try{map.removeLayer(drawPoly.current);}catch(e){} drawPoly.current = null; }
+    drawPts.current = []; setPtCount(0);
+  };
+
+  const cancelDraw = () => {
+    if (mapInst.current) {
+      mapInst.current.off("click", onMapClick);
+      mapInst.current.getContainer().style.cursor = "";
+    }
+    setDrawing(false); setShowForm(false); clearDraw();
+  };
+
+  const savePlot = () => {
+    if (!form.name.trim()) { toast("Escribe el nombre del terreno","error"); return; }
+    const poly = [...drawPts.current];
+    const newPlot = {
+      id:uid(), name:form.name.trim(), crop:form.crop,
+      area:safeAmount(form.area), stage:0, notes:"",
+      color:form.color, lat:poly[0][0], lng:poly[0][1], polygon:poly,
+      invoices:[], transactions:[], photos:[], createdAt:nowDate(),
+    };
+    setState(s => ({ ...s, plots:[...(s.plots||[]), newPlot] }));
+    clearDraw(); setShowForm(false);
+    toast(`Terreno "${newPlot.name}" guardado ✓`);
+  };
+
+  const selPlot = selId ? (state.plots||[]).find(p=>p.id===selId) : null;
+
+  /* ── RENDER ── */
   return (
-    <div style={{ display:"flex", flexDirection:"column", height:"100%", position:"relative" }}>
-      {/* Mapa */}
-      <div ref={mapRef} style={{ flex:1, width:"100%", minHeight:"0" }} />
+    <div style={{ position:"relative", width:"100%", height:"100%", overflow:"hidden", background:"#0a1a0f" }}>
 
-      {/* Controles flotantes sobre el mapa */}
-      <div style={{ position:"absolute", top:"12px", right:"12px", zIndex:800, display:"flex", flexDirection:"column", gap:"8px" }}>
-        {/* GPS */}
-        <button onClick={centerOnFarm} className="bp"
-          style={{ background:"rgba(5,14,9,0.92)", border:`1px solid ${T.border}`, borderRadius:"10px", padding:"9px 12px", color:T.green, fontSize:"13px", display:"flex", alignItems:"center", gap:"6px", backdropFilter:"blur(12px)", cursor:"pointer" }}>
-          {gpsLoading ? <Spinner size={14}/> : "📍"} {state.farm.lat ? "Mi finca" : "Ubicarme"}
-        </button>
+      {/* MAP fills 100% — position absolute so Leaflet gets real pixel size */}
+      <div ref={mapRef} style={{ position:"absolute", inset:0, width:"100%", height:"100%", zIndex:1 }} />
 
-        {/* Dibujar */}
-        {!drawing ? (
-          <button onClick={startDrawing} className="bp"
-            style={{ background:T.gradGreen, border:"none", borderRadius:"10px", padding:"9px 12px", color:"#fff", fontSize:"12px", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:"5px" }}>
-            ✏️ Marcar terreno
-          </button>
-        ) : (
-          <div style={{ display:"flex", flexDirection:"column", gap:"6px" }}>
-            <button onClick={finishDrawing} className="bp"
-              style={{ background:"rgba(74,222,128,0.9)", border:"none", borderRadius:"10px", padding:"9px 12px", color:T.bg, fontSize:"12px", fontWeight:700, cursor:"pointer" }}>
-              ✓ Finalizar ({drawPointsRef.current?.length||0} pts)
-            </button>
-            <button onClick={cancelDrawing} className="bp"
-              style={{ background:T.redSoft, border:`1px solid ${T.red}30`, borderRadius:"10px", padding:"7px 12px", color:T.red, fontSize:"12px", fontWeight:600, cursor:"pointer" }}>
-              ✕ Cancelar
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Loading overlay */}
+      {!ready && (
+        <div style={{ position:"absolute", inset:0, zIndex:900, background:"#050e09", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:"14px" }}>
+          <div style={{ fontSize:"40px" }}>🗺️</div>
+          <Spinner size={22}/>
+          <div style={{ fontSize:"13px", color:"#4ade80", fontWeight:700 }}>Cargando mapa satelital…</div>
+        </div>
+      )}
 
-      {/* Header info finca */}
-      <div style={{ position:"absolute", top:"12px", left:"12px", zIndex:800 }}>
-        <div style={{ background:"rgba(5,14,9,0.92)", border:`1px solid ${T.border}`, borderRadius:"12px", padding:"10px 14px", backdropFilter:"blur(16px)" }}>
-          <div style={{ fontSize:"14px", fontWeight:800, color:T.text, letterSpacing:"-0.02em" }}>
-            {state.farm.name || "Mi Finca"}
-          </div>
-          <div style={{ fontSize:"10px", color:T.textMuted, marginTop:"2px" }}>
-            {state.farm.owner && `${state.farm.owner} · `}{ZONES[state.farm.zone]?.icon} {ZONES[state.farm.zone]?.name}
-          </div>
-          <div style={{ display:"flex", gap:"8px", marginTop:"8px" }}>
-            <div style={{ fontSize:"11px", color:T.green }}>💰 RD${(income/1000).toFixed(0)}K</div>
-            <div style={{ fontSize:"11px", color:T.red }}>📤 RD${(expense/1000).toFixed(0)}K</div>
-            <div style={{ fontSize:"11px", color:T.textMuted }}>🗺️ {state.plots.length} terrenos</div>
+      {/* ── TOP-LEFT: Farm info chip ── */}
+      <div style={{ position:"absolute", top:"10px", left:"10px", zIndex:800, maxWidth:"55vw" }}>
+        <div style={{ background:"rgba(5,14,9,0.92)", border:"1px solid rgba(74,222,128,0.22)", borderRadius:"12px", padding:"8px 12px", backdropFilter:"blur(14px)" }}>
+          <div style={{ fontSize:"13px", fontWeight:800, color:"#edfff4", lineHeight:1.2 }}>{state.farm.name||"Mi Finca"}</div>
+          <div style={{ fontSize:"10px", color:"rgba(237,255,244,0.45)", marginTop:"2px" }}>
+            {ZONES[state.farm.zone]?.icon} {ZONES[state.farm.zone]?.name} · {(state.plots||[]).length} terrenos
           </div>
         </div>
       </div>
 
-      {/* Drawer: Formulario nuevo terreno */}
-      {showAddForm && (
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, zIndex:900, background:"rgba(5,14,9,0.97)", border:`1px solid ${T.border}`, borderRadius:"20px 20px 0 0", padding:"20px 16px", backdropFilter:"blur(20px)" }}>
-          <div style={{ fontSize:"13px", fontWeight:700, color:T.accent, marginBottom:"14px" }}>🌱 Registrar Terreno</div>
+      {/* ── TOP-RIGHT: Buttons ── */}
+      <div style={{ position:"absolute", top:"10px", right:"10px", zIndex:800, display:"flex", flexDirection:"column", gap:"7px" }}>
+        {/* GPS */}
+        <button onClick={goToFarm} style={{ background:"rgba(5,14,9,0.92)", border:"1px solid rgba(74,222,128,0.25)", borderRadius:"10px", padding:"9px 13px", color:"#4ade80", fontSize:"12px", fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:"5px", backdropFilter:"blur(12px)", boxShadow:"0 2px 8px rgba(0,0,0,0.4)", whiteSpace:"nowrap" }}>
+          {gpsLoad ? <Spinner size={12}/> : "📍"} {state.farm.lat ? "Mi finca" : "Ubicarme"}
+        </button>
+
+        {/* Draw controls */}
+        {!drawing ? (
+          <button onClick={startDraw} style={{ background:"linear-gradient(135deg,#16a34a,#14532d)", border:"none", borderRadius:"10px", padding:"10px 13px", color:"#fff", fontSize:"12px", fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:"5px", boxShadow:"0 2px 10px rgba(74,222,128,0.3)", whiteSpace:"nowrap" }}>
+            ✏️ Marcar terreno
+          </button>
+        ) : (
+          <>
+            <button onClick={finishDraw} style={{ background:ptCount>=3?"#4ade80":"rgba(74,222,128,0.3)", border:"none", borderRadius:"10px", padding:"10px 13px", color:ptCount>=3?"#050e09":"#4ade80", fontSize:"12px", fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>
+              ✓ Guardar ({ptCount})
+            </button>
+            <button onClick={cancelDraw} style={{ background:"rgba(248,113,113,0.15)", border:"1px solid rgba(248,113,113,0.3)", borderRadius:"10px", padding:"8px 13px", color:"#f87171", fontSize:"12px", cursor:"pointer", whiteSpace:"nowrap" }}>
+              ✕ Cancelar
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* ── DRAW INSTRUCTIONS ── */}
+      {drawing && (
+        <div style={{ position:"absolute", bottom:"90px", left:"10px", right:"10px", zIndex:800, background:"rgba(5,14,9,0.95)", border:"1px solid rgba(74,222,128,0.3)", borderRadius:"12px", padding:"11px 14px", textAlign:"center" }}>
+          <div style={{ fontSize:"12px", color:"#4ade80", fontWeight:700 }}>
+            {ptCount===0?"👆 Toca el mapa para colocar el primer punto":
+             ptCount===1?"👆 Coloca el segundo punto":
+             ptCount===2?"👆 Un punto más para cerrar el terreno":
+             `✅ ${ptCount} puntos — toca ✓ Guardar o sigue marcando`}
+          </div>
+        </div>
+      )}
+
+      {/* ── SAVE FORM (bottom sheet) ── */}
+      {showForm && (
+        <div style={{ position:"absolute", bottom:0, left:0, right:0, zIndex:900, background:"rgba(5,14,9,0.98)", border:"1px solid rgba(74,222,128,0.2)", borderRadius:"20px 20px 0 0", padding:"18px 16px 30px", backdropFilter:"blur(20px)" }}>
+          <div style={{ width:"36px", height:"4px", background:"rgba(74,222,128,0.3)", borderRadius:"2px", margin:"0 auto 14px" }}/>
+          <div style={{ fontSize:"14px", fontWeight:800, color:"#86efac", marginBottom:"14px" }}>🌱 Nuevo Terreno</div>
           <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px" }}>
-              <Inp label="Nombre del terreno" value={plotForm.name} onChange={e=>setPlotForm(f=>({...f,name:e.target.value}))} placeholder="Ej: Parcela Norte" />
-              <Inp label="Área (tareas)" type="number" value={plotForm.area} onChange={e=>setPlotForm(f=>({...f,area:e.target.value}))} placeholder="0" />
+              <Inp label="Nombre" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Ej: Parcela Norte"/>
+              <Inp label="Área (tareas)" type="number" value={form.area} onChange={e=>setForm(f=>({...f,area:e.target.value}))} placeholder="0"/>
             </div>
-            <Sel label="Cultivo principal" value={plotForm.crop} onChange={e=>setPlotForm(f=>({...f,crop:e.target.value}))}>
-              {(ZONES[state.farm.zone]?.crops||Object.keys(CROPS)).map(c=><option key={c} value={c}>{CROPS[c]?.icon} {CROPS[c]?.name}</option>)}
-              {Object.keys(CROPS).filter(c=>!ZONES[state.farm.zone]?.crops?.includes(c)).map(c=><option key={c} value={c}>{CROPS[c]?.icon} {CROPS[c]?.name}</option>)}
+            <Sel label="Cultivo" value={form.crop} onChange={e=>setForm(f=>({...f,crop:e.target.value}))}>
+              {Object.keys(CROPS).map(c=><option key={c} value={c}>{CROPS[c]?.icon} {CROPS[c]?.name}</option>)}
             </Sel>
             <div>
-              <label style={{ fontSize:"10px", fontWeight:700, color:T.textMuted, letterSpacing:"0.09em", textTransform:"uppercase", display:"block", marginBottom:"6px" }}>Color del terreno</label>
+              <div style={{ fontSize:"10px", color:"rgba(237,255,244,0.4)", fontWeight:700, marginBottom:"6px", textTransform:"uppercase" }}>Color</div>
               <div style={{ display:"flex", gap:"8px" }}>
-                {PLOT_COLORS.map(c => (
-                  <div key={c} onClick={()=>setPlotForm(f=>({...f,color:c}))} style={{ width:"24px", height:"24px", borderRadius:"6px", background:c, cursor:"pointer", border:`2px solid ${plotForm.color===c?"#fff":"transparent"}`, transition:"all 0.15s" }} />
+                {COLORS.map(c=>(
+                  <div key={c} onClick={()=>setForm(f=>({...f,color:c}))}
+                    style={{ width:"26px", height:"26px", borderRadius:"7px", background:c, cursor:"pointer", border:`3px solid ${form.color===c?"#fff":"transparent"}`, transition:"border 0.15s" }}/>
                 ))}
               </div>
             </div>
-            <Inp label="Notas (opcional)" value={plotForm.notes} onChange={e=>setPlotForm(f=>({...f,notes:e.target.value}))} placeholder="Observaciones del terreno..." />
-            <div style={{ display:"flex", gap:"8px" }}>
-              <Btn full onClick={savePlot}>Guardar Terreno</Btn>
-              <Btn variant="outline" onClick={cancelDrawing}>Cancelar</Btn>
+            <div style={{ display:"flex", gap:"8px", marginTop:"4px" }}>
+              <Btn full onClick={savePlot}>💾 Guardar Terreno</Btn>
+              <Btn variant="outline" onClick={cancelDraw}>Cancelar</Btn>
             </div>
           </div>
         </div>
       )}
 
-      {/* Panel: Terreno seleccionado */}
-      {selPlot && !showAddForm && (
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, zIndex:900, background:"rgba(5,14,9,0.97)", border:`1px solid ${selPlot.color||T.border}40`, borderRadius:"20px 20px 0 0", padding:"18px 16px", backdropFilter:"blur(20px)", maxHeight:"60%" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"14px" }}>
+      {/* ── PLOT DETAIL (bottom sheet) ── */}
+      {selPlot && !showForm && (
+        <div style={{ position:"absolute", bottom:0, left:0, right:0, zIndex:900, background:"rgba(5,14,9,0.97)", border:`1px solid ${selPlot.color||"#4ade80"}30`, borderRadius:"20px 20px 0 0", padding:"18px 16px 28px", backdropFilter:"blur(20px)" }}>
+          <div style={{ width:"36px", height:"4px", background:"rgba(74,222,128,0.3)", borderRadius:"2px", margin:"0 auto 14px" }}/>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"12px" }}>
             <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
-              <div style={{ width:"10px", height:"10px", borderRadius:"50%", background:selPlot.color||T.green }} />
+              <div style={{ width:"12px", height:"12px", borderRadius:"50%", background:selPlot.color||"#4ade80" }}/>
               <div>
-                <div style={{ fontSize:"15px", fontWeight:700 }}>{selPlot.name}</div>
-                <div style={{ fontSize:"11px", color:T.textSec }}>{selCrop?.icon} {selCrop?.name} · {selPlot.area} tareas</div>
+                <div style={{ fontSize:"16px", fontWeight:800, color:"#edfff4" }}>{selPlot.name}</div>
+                <div style={{ fontSize:"11px", color:"rgba(237,255,244,0.45)", marginTop:"2px" }}>{CROPS[selPlot.crop]?.icon} {CROPS[selPlot.crop]?.name} · {selPlot.area} tareas</div>
               </div>
             </div>
-            <button onClick={()=>setSelectedPlot(null)} style={{ background:"none", border:"none", color:T.textMuted, fontSize:"18px", cursor:"pointer" }}>×</button>
+            <button onClick={()=>setSelId(null)} style={{ background:"rgba(255,255,255,0.08)", border:"none", color:"rgba(237,255,244,0.5)", fontSize:"18px", cursor:"pointer", borderRadius:"50%", width:"30px", height:"30px", display:"flex", alignItems:"center", justifyContent:"center" }}>×</button>
           </div>
-
-          {/* Etapa */}
-          <div style={{ marginBottom:"12px" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"4px" }}>
-              {selCrop?.stage.map((s,i) => (
-                <span key={i} style={{ fontSize:"10px", color:i<=selPlot.stage?selPlot.color||T.green:T.textMuted, fontWeight:i===selPlot.stage?700:400 }}>{s}</span>
-              ))}
-            </div>
-            <div style={{ height:"4px", background:T.border, borderRadius:"2px" }}>
-              <div style={{ height:"100%", width:`${((selPlot.stage+1)/selCrop.stage.length)*100}%`, background:selPlot.color||T.gradGreen, borderRadius:"2px", transition:"width 0.5s" }} />
-            </div>
-          </div>
-
-          {/* Stats */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"8px", marginBottom:"12px" }}>
             {[
-              { label:"Ingresos", value:`RD$${((selPlot.transactions||[]).filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0)/1000).toFixed(1)}K`, color:T.green },
-              { label:"Gastos",   value:`RD$${((selPlot.transactions||[]).filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0)/1000).toFixed(1)}K`, color:T.red },
-              { label:"Facturas", value:(selPlot.invoices||[]).length, color:T.blue },
+              { label:"Ingresos",  val:`RD$${((selPlot.transactions||[]).filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0)/1000).toFixed(1)}K`, color:"#4ade80" },
+              { label:"Gastos",    val:`RD$${((selPlot.transactions||[]).filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0)/1000).toFixed(1)}K`, color:"#f87171" },
+              { label:"Facturas",  val:(selPlot.invoices||[]).length, color:"#60a5fa" },
             ].map(k=>(
-              <div key={k.label} style={{ background:"rgba(255,255,255,0.04)", borderRadius:"8px", padding:"10px 8px", textAlign:"center" }}>
-                <div style={{ fontSize:"13px", fontWeight:700, color:k.color }}>{k.value}</div>
-                <div style={{ fontSize:"10px", color:T.textMuted }}>{k.label}</div>
+              <div key={k.label} style={{ background:"rgba(255,255,255,0.05)", borderRadius:"10px", padding:"10px 8px", textAlign:"center" }}>
+                <div style={{ fontSize:"14px", fontWeight:800, color:k.color }}>{k.val}</div>
+                <div style={{ fontSize:"9px", color:"rgba(237,255,244,0.4)", marginTop:"2px" }}>{k.label}</div>
               </div>
             ))}
           </div>
-
           <div style={{ display:"flex", gap:"8px" }}>
-            <Btn size="sm" variant="ghost" full onClick={() => { setTab("plots"); setSelectedPlot(null); }}>Ver detalle completo</Btn>
-            <Btn size="sm" variant="red" onClick={() => deletePlot(selPlot.id)}>🗑</Btn>
+            <Btn full onClick={()=>{ setSelId(null); setTab("plots"); }}>Ver detalle →</Btn>
+            <Btn variant="red" onClick={()=>{ setState(s=>({...s,plots:(s.plots||[]).filter(p=>p.id!==selPlot.id)})); setSelId(null); toast("Terreno eliminado"); }}>🗑</Btn>
           </div>
         </div>
       )}
@@ -681,9 +703,6 @@ const MapDashboard = ({ state, setState, setTab }) => {
   );
 };
 
-/* ═══════════════════════════════════════════
-   MÓDULO: PARCELAS (detalle + cultivos + facturas)
-═══════════════════════════════════════════ */
 const PlotsManager = ({ state, setState }) => {
   const [view, setView] = useState("list");   // list | detail
   const [activePlot, setActivePlot] = useState(null);
