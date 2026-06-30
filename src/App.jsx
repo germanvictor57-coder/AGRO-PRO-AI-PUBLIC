@@ -4074,6 +4074,31 @@ Responde como el experto que realizó el diagnóstico. Usa español dominicano. 
 /* ═══════════════════════════════════════════
    MÓDULO: IMPORTAR EXCEL
 ═══════════════════════════════════════════ */
+const AgroLogo = ({ size=40 }) => (
+  <div style={{ width:size, height:size, flexShrink:0 }}>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width={size} height={size}>
+      <circle cx="50" cy="50" r="48" fill="#071510" stroke="#4ade80" strokeWidth="2.5"/>
+      <ellipse cx="50" cy="72" rx="28" ry="5" fill="#16a34a" opacity="0.5"/>
+      <path d="M50 70 Q48 55 50 35" stroke="#4ade80" strokeWidth="3" fill="none" strokeLinecap="round"/>
+      <path d="M49 55 Q32 48 28 32 Q42 36 49 52" fill="#4ade80" opacity="0.9"/>
+      <path d="M51 48 Q68 40 74 24 Q60 30 51 46" fill="#86efac" opacity="0.9"/>
+      <path d="M50 35 Q44 22 50 15 Q56 22 50 35" fill="#4ade80"/>
+      <circle cx="50" cy="62" r="2.5" fill="#14532d" stroke="#4ade80" strokeWidth="1.5"/>
+      <circle cx="49" cy="50" r="2.5" fill="#14532d" stroke="#4ade80" strokeWidth="1.5"/>
+      <circle cx="50" cy="40" r="2.5" fill="#14532d" stroke="#4ade80" strokeWidth="1.5"/>
+      <line x1="47" y1="62" x2="38" y2="62" stroke="#4ade80" strokeWidth="1" opacity="0.6"/>
+      <circle cx="36" cy="62" r="1.5" fill="#4ade80" opacity="0.6"/>
+      <line x1="52" y1="50" x2="61" y2="50" stroke="#4ade80" strokeWidth="1" opacity="0.6"/>
+      <circle cx="63" cy="50" r="1.5" fill="#4ade80" opacity="0.6"/>
+      <line x1="47" y1="40" x2="38" y2="40" stroke="#4ade80" strokeWidth="1" opacity="0.6"/>
+      <circle cx="36" cy="40" r="1.5" fill="#4ade80" opacity="0.6"/>
+      <path d="M50 70 Q44 75 40 78" stroke="#16a34a" strokeWidth="2" fill="none" strokeLinecap="round" opacity="0.7"/>
+      <path d="M50 70 Q56 75 60 78" stroke="#16a34a" strokeWidth="2" fill="none" strokeLinecap="round" opacity="0.7"/>
+      <path d="M50 70 Q50 76 50 80" stroke="#16a34a" strokeWidth="2" fill="none" strokeLinecap="round" opacity="0.7"/>
+    </svg>
+  </div>
+);
+
 const ExcelImporter = ({ state, setState }) => {
   const [step, setStep]       = useState("home");
   const [rows, setRows]       = useState([]);
@@ -4465,8 +4490,8 @@ export default function App() {
           height: "100vh",
         }}>
           {/* Logo — fijo arriba */}
-          <div style={{ width:"38px", height:"38px", background:T.gradGreen, borderRadius:"11px", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"17px", marginBottom:"10px", animation:"glow 3s ease-in-out infinite", flexShrink:0 }}>
-            🌱
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"center", marginBottom:"8px", flexShrink:0, animation:"glow 3s ease-in-out infinite" }}>
+            <AgroLogo size={42}/>
           </div>
 
           {/* Tabs — zona con scroll suave */}
