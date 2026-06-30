@@ -4451,18 +4451,18 @@ export default function App() {
           </div>
 
           {/* Tabs — zona con scroll suave */}
-          <div style={{
+          <div className="sidebar-scroll" style={{
             flex: 1,
             width: "100%",
             overflowY: "auto",
             overflowX: "hidden",
             display: "flex",
             flexDirection: "column",
-            gap: "2px",
+            gap: "1px",
             scrollbarWidth: "none",
             msOverflowStyle: "none",
           }}>
-            <style>{`.sidebar-scroll::-webkit-scrollbar{display:none;}`}</style>
+            <style>{`.sidebar-scroll::-webkit-scrollbar{display:none}`}</style>
             {TABS.map(t => {
               const active = tab === t.id;
               const unreadAlerts = (state.smartAlerts||[]).filter(a=>!a.read).length;
@@ -4479,8 +4479,8 @@ export default function App() {
                       display: "flex",
                       flexDirection: "column",
                       alignItems: "center",
-                      gap: "2px",
-                      padding: "8px 4px",
+                      gap: "1px",
+                      padding: "6px 2px",
                       background: active ? "rgba(74,222,128,0.13)" : "transparent",
                       border: "none",
                       cursor: "pointer",
@@ -4491,8 +4491,8 @@ export default function App() {
                     {active && (
                       <div style={{ position:"absolute", left:0, top:"50%", transform:"translateY(-50%)", width:"3px", height:"28px", background:T.green, borderRadius:"0 3px 3px 0" }} />
                     )}
-                    <span style={{ fontSize:"18px", lineHeight:1 }}>{t.icon}</span>
-                    <span style={{ fontSize:"7px", fontWeight:active?700:500, color:active?T.green:T.textMuted, letterSpacing:"0.01em", whiteSpace:"nowrap" }}>
+                    <span style={{ fontSize:"16px", lineHeight:1 }}>{t.icon}</span>
+                    <span style={{ fontSize:"7px", fontWeight:active?700:500, color:active?T.green:T.textMuted, letterSpacing:"0.01em", whiteSpace:"nowrap", overflow:"hidden", maxWidth:"52px", textOverflow:"ellipsis", display:"block", textAlign:"center" }}>
                       {t.short}
                     </span>
                     {badge > 0 && (
