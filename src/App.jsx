@@ -28,6 +28,35 @@
   - ⚡ Alertas inteligentes proactivas por IA
 */
 /* ── SheetJS loader for Excel import ── */
+
+/* ── Error Boundary — catches runtime crashes and shows friendly message ── */
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError:false, error:null }; }
+  static getDerivedStateFromError(error) { return { hasError:true, error }; }
+  componentDidCatch(error, info) { console.error("AgroPro AI Error:", error, info); }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ minHeight:"100vh", background:"#050e09", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"32px", gap:"16px" }}>
+          <div style={{ fontSize:"48px" }}>⚠️</div>
+          <div style={{ fontSize:"18px", fontWeight:800, color:"#f87171", textAlign:"center" }}>Algo salió mal</div>
+          <div style={{ fontSize:"13px", color:"rgba(237,255,244,0.5)", textAlign:"center", maxWidth:"300px" }}>
+            {this.state.error?.message || "Error inesperado"}
+          </div>
+          <button
+            onClick={()=>{ localStorage.removeItem("agropro_v9"); window.location.reload(); }}
+            style={{ marginTop:"8px", background:"linear-gradient(135deg,#16a34a,#14532d)", border:"none", borderRadius:"10px", padding:"12px 24px", color:"#fff", fontSize:"14px", fontWeight:700, cursor:"pointer" }}>
+            🔄 Reiniciar aplicación
+          </button>
+          <div style={{ fontSize:"11px", color:"rgba(237,255,244,0.3)", textAlign:"center" }}>
+            Esto borrará los datos locales y comenzará de nuevo
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 const loadXLSX = (cb) => {
   if (window.XLSX) { cb(window.XLSX); return; }
   const s = document.createElement("script");
